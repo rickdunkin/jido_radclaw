@@ -56,8 +56,11 @@ these slices.
 - Each node serves the built SPA from `priv/static/argus/` at `/argus` —
   same-origin with `/gql` and `/ws`, no CORS surface.
   [argus-ui-bootstrap]
-- Codegen starts basic: `typescript` + `typescript-operations` plugins,
+- Codegen starts basic: `typescript-operations` + `typed-document-node`,
   types only; `typescript-react-apollo` and `client-preset` rejected.
+  P4 dropped the base `typescript` plugin: operations v6 is
+  self-contained and re-emits every operation-used enum (no
+  reference-external option), so pairing double-declares them.
   [argus-ui-bootstrap, §6.3]
 - The SDL golden `ui/schema.graphql` is committed and precommit-enforced
   (`mix jidoclaw.graphql.schema` / `.check`) — shipped with P1.
@@ -72,6 +75,41 @@ these slices.
   derivation (`disposition`/`findings_deferred_count` calculations
   delegate to the `run_view/3` derivations — never a parallel read
   model). [argus-ui-bootstrap]
+- `workflows:run:<id>` is the first live topic, served by a SEPARATE
+  key-only `ArgusSocket` (`/argus/ws`, `workflows:*` its only channel) —
+  never a UserSocket extension: key auth there would have unlocked
+  `rpc:*` for the baked SPA key. [argus-ui-bootstrap, P4, §4.2, §4.4]
+- The WS key rides Phoenix's `authToken` header transport
+  (`Sec-WebSocket-Protocol`), superseding §4.4's params-borne v1
+  language — the key never appears in a URL, so no filter_parameters
+  change (and none should be made: Phoenix's default already covers
+  `_csrf_token`). [argus-ui-bootstrap, P4]
+- Channel payloads stay minimal: `run_event` = `{id, kind}` with an
+  exact five-kind lifecycle allowlist (centralized in
+  `RunPubSub.lifecycle_kinds/0`) and the broadcast info map never
+  forwarded; the join reply carries `{id, status}` (lowercase-snake wire
+  casing) so the client closes the fetch→join gap by refetching on ANY
+  current-status mismatch. Composer runs publish onto the SAME five
+  kinds — start after the mint commits, terminals mapped by status
+  family (`route_abandoned` → `run_cancelled`: the wire kind agrees with
+  the durable status) — so no `route_*` kind ever rides the wire and the
+  allowlist stays exactly five. [argus-ui-bootstrap, P4 + review
+  remediation, §4.2]
+- Suspension force-disconnects a tenant's argus sockets via a direct
+  endpoint-independent PubSub broadcast from the tenant manager
+  (cluster-correct from CLI/MCP nodes); reconnects are refused at
+  connect, and the client parks itself after a bounded refused-reconnect
+  run (audit-flood guard) with a manual Retry.
+  [argus-ui-bootstrap, P4]
+- Key revocation on a live socket revalidates on transport reconnect
+  only — the TC1-2 ticket path stays reserved for the proper fix.
+  [argus-ui-bootstrap, P4, §4.4]
+- GraphQL subscriptions re-examined at P4; the §2.4 channels call
+  stands: Apollo-side Absinthe subscription transport maturity, the
+  publish mismatch (lifecycle broadcasts originate in
+  ReactorMiddleware/RunPubSub, not Ash notifiers), and the `/gql`
+  plug-pipeline protections (batch guard, tenant gate) not applying over
+  a socket. [argus-ui-bootstrap, P4, §2.4]
 
 ## Product shape (FLOW §1–3)
 

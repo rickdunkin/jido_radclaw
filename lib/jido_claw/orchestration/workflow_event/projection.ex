@@ -48,15 +48,19 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
   # `result.disposition`, a `:failed`-with-result combination neither family
   # does). Camus C1-4's `:route_done_with_findings` is the COMPLETED twin of
   # that note: the first completed-family kind with a disposition, kept out of
-  # both failure families for the same shadowing reason.
-  @route_terminal_kinds [
-                          :route_converged,
-                          :route_done_with_findings,
-                          :route_verify_failed,
-                          :route_fix_failed,
-                          :route_review_infra_failed,
-                          :route_verify_tampered
-                        ] ++
+  # both failure families for the same shadowing reason. Both therefore get
+  # their own named attribute — used ONLY by `@route_terminal_kinds` and
+  # `route_terminal_status/1`, never by the guard clauses those comments
+  # protect.
+  @route_completed_kinds [:route_converged, :route_done_with_findings]
+  @route_failed_with_disposition_kinds [
+    :route_verify_failed,
+    :route_fix_failed,
+    :route_review_infra_failed,
+    :route_verify_tampered
+  ]
+  @route_terminal_kinds @route_completed_kinds ++
+                          @route_failed_with_disposition_kinds ++
                           @route_failed_kinds ++ @route_cancelled_kinds
 
   # Status-authority set. `run_recovered`/`run_halted`/`step_*` are NOT
@@ -181,6 +185,32 @@ defmodule JidoClaw.Orchestration.WorkflowEvent.Projection do
     do: {:ok, :cancelled}
 
   def next_status(_current, _kind), do: :illegal
+
+  @doc """
+  The terminal `WorkflowRun.status` a successfully appended parent-terminal
+  `kind` committed — the composer's twelve `route_*` terminals plus the
+  abnormal-path `:run_failed`.
+
+  Built from the same kind lists that drive `next_status/2`: for every
+  terminal kind the resulting status depends only on the kind (the
+  pre-append status gates *legality*, never the result, and an `:illegal`
+  transition rolls the append back), so a post-append consumer — the
+  composer's lifecycle broadcast — reads the committed status here instead
+  of re-deriving the family by hand. Total: any other input is `:unknown`,
+  never a raise (callers treat it as "don't broadcast").
+  """
+  @spec route_terminal_status(term()) :: {:ok, :completed | :failed | :cancelled} | :unknown
+  def route_terminal_status(kind) when kind in @route_completed_kinds, do: {:ok, :completed}
+
+  # The abnormal-path terminal — the one non-`route_*` kind the composer appends.
+  def route_terminal_status(:run_failed), do: {:ok, :failed}
+
+  def route_terminal_status(kind)
+      when kind in @route_failed_with_disposition_kinds or kind in @route_failed_kinds,
+      do: {:ok, :failed}
+
+  def route_terminal_status(kind) when kind in @route_cancelled_kinds, do: {:ok, :cancelled}
+  def route_terminal_status(_kind), do: :unknown
 
   @doc """
   The `WorkflowRun` attribute changes a status-authority `kind` implies.

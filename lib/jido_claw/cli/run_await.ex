@@ -3,13 +3,13 @@ defmodule JidoClaw.CLI.RunAwait do
   Awaits a composer run's terminal state for the one-shot CLI runner
   (`JidoClaw.CLI.RunCommand`).
 
-  Polling `WorkflowRun.by_id` is the AUTHORITATIVE terminal detector: a
-  composer *parent*'s terminal status is written via the
-  `WorkflowLog.append` → projection path, which does not broadcast (ordinary
-  Reactor runs do broadcast completion — do not rely on that here).
-  `RunPubSub.subscribe/1` is wired only as an early-wake optimization: any
-  run-topic event cuts the current tick short and triggers an immediate
-  re-poll.
+  Polling `WorkflowRun.by_id` is the AUTHORITATIVE terminal detector:
+  run-lifecycle broadcasts (Reactor runs via the middleware, composer
+  parents via the post-append announce in `RouteComposer`) are post-commit
+  and best-effort — they can be lost, so never rely on one for
+  correctness. `RunPubSub.subscribe/1` is wired only as an early-wake
+  optimization: any run-topic event cuts the current tick short and
+  triggers an immediate re-poll.
 
   Gate detection probes `AgentCase.pending_for_run_tree/1` because a composer
   parent stays `:running` while parked on a human gate — the child wave run

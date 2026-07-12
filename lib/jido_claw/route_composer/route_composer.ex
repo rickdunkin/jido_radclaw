@@ -1127,6 +1127,16 @@ defmodule JidoClaw.RouteComposer do
   defp reload_running_parent(parent, tenant, actor) do
     case WorkflowRun.by_id(parent.id, tenant: tenant, actor: actor) do
       {:ok, %WorkflowRun{} = running} ->
+        # Composer parents never ride ReactorMiddleware (the reactor-run start
+        # announcer), so the lifecycle `run_started` is broadcast here — the
+        # first post-commit point after the mint `Ash.transact` (every producer
+        # entrance funnels through `create_parent_run/1`; boot recovery never
+        # re-mints). Shielded: a raising PubSub must not fail the committed
+        # mint (`notify_best_effort/3`).
+        notify_best_effort("run_started", running.id, fn ->
+          RunPubSub.broadcast_run_started(running)
+        end)
+
         {:ok, running}
 
       other ->
@@ -5470,9 +5480,92 @@ defmodule JidoClaw.RouteComposer do
              actor: actor,
              claim_fence_token: claim_token
            ) do
-        {:ok, _event} -> :ok
-        {:error, reason} -> {:error, reason}
+        {:ok, _event} ->
+          # Post-commit (`WorkflowEvent` is `transaction?(true)`), covering
+          # BOTH callers — loop terminals via `parent_terminal_notify/4` and
+          # the abnormal-path `run_failed` via `terminalize_parent/5`. The
+          # already-terminal `:ok` short-circuit above deliberately does NOT
+          # broadcast (the finish-vs-timeout double-fire guard). Shielded: a
+          # raising PubSub must not fail the persisted terminal.
+          notify_best_effort("parent-terminal", parent.id, fn ->
+            broadcast_parent_terminal(parent, kind, tenant, actor)
+          end)
+
+          :ok
+
+        {:error, reason} ->
+          {:error, reason}
       end
+    end
+  end
+
+  @doc false
+  # The best-effort notification shield (durable-then-notify): a post-commit
+  # lifecycle broadcast must never undo or veto durable truth.
+  # `Phoenix.PubSub.broadcast/3` RAISES while its registry is briefly down
+  # (`{:ok, _} = Registry.meta(...)` inside the dep), so discarding the
+  # returned tuple is not enough — catch raises/exits/throws at this
+  # boundary too, log every non-`:ok` outcome, and always return `:ok`.
+  # Public for direct unit coverage (the `read_error_reason/1` precedent).
+  @spec notify_best_effort(String.t(), term(), (-> :ok | {:error, term()})) :: :ok
+  def notify_best_effort(label, run_id, fun) do
+    case fun.() do
+      :ok -> :ok
+      {:error, reason} -> log_notify_failure(label, run_id, :returned, reason)
+    end
+  catch
+    kind, payload -> log_notify_failure(label, run_id, kind, payload)
+  end
+
+  defp log_notify_failure(label, run_id, source, payload) do
+    Logger.warning(
+      "[RouteComposer] best-effort #{label} broadcast failed for #{run_id} " <>
+        "(#{source}): #{inspect(payload)} — durable state unaffected"
+    )
+
+    :ok
+  end
+
+  # Announce a committed parent terminal on the run topics (durable-then-notify:
+  # the append above already returned `{:ok, _}`, and the caller runs this
+  # under `notify_best_effort/3`, so no raise here can touch it). The
+  # projection maps the appended kind to the status it committed
+  # (single-sourced; `:unknown` logs loudly and skips). The wire kind is the
+  # status FAMILY event (`:run_completed`/`:run_failed`/`:run_cancelled`) —
+  # zero new shapes on `orchestration:run:*`; subscribers refetch and read
+  # the disposition from the run row.
+  defp broadcast_parent_terminal(parent, kind, tenant, actor) do
+    case Projection.route_terminal_status(kind) do
+      {:ok, status} ->
+        reloaded = reload_for_broadcast(parent, tenant, actor)
+        RunPubSub.broadcast_run_terminal(reloaded, wire_kind(status), status)
+
+      :unknown ->
+        Logger.error(
+          "[RouteComposer] no lifecycle broadcast family for terminal kind " <>
+            "#{inspect(kind)} (parent #{parent.id}) — terminal persisted, event skipped"
+        )
+
+        :ok
+    end
+  end
+
+  # Committed terminal status → the five-kind wire family. `:route_abandoned`
+  # rides `:run_cancelled`, not `:run_abandoned` — it PROJECTS to `:cancelled`,
+  # and the broadcast kind must agree with the durable status the payload
+  # carries. Exhaustive over `route_terminal_status/1`'s success statuses.
+  defp wire_kind(:completed), do: :run_completed
+  defp wire_kind(:failed), do: :run_failed
+  defp wire_kind(:cancelled), do: :run_cancelled
+
+  # Reload once so the event carries the fresh `completed_at`; a freak reload
+  # failure degrades to the pre-append snapshot — the explicit `status`
+  # argument keeps the event truthful either way (`broadcast_run_terminal/3`'s
+  # own rule).
+  defp reload_for_broadcast(parent, tenant, actor) do
+    case WorkflowRun.by_id(parent.id, tenant: tenant, actor: actor) do
+      {:ok, %WorkflowRun{} = reloaded} -> reloaded
+      _degraded -> parent
     end
   end
 

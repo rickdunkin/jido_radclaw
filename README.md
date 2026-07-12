@@ -390,6 +390,7 @@ Signed-in users who aren't allowlisted get a 404 for `/admin`; signed-out users 
 | `/sign-in`        | Sign In        | Authentication                                   |
 | `/admin`          | Admin Panel    | AshAdmin resource browser                        |
 | `/live-dashboard` | LiveDashboard  | Phoenix telemetry metrics                        |
+| `/argus`          | argus SPA      | Node-served React client (build: `mix ui.build`) |
 
 ### Authentication
 
@@ -415,7 +416,9 @@ JidoClaw can be packaged as a native desktop application using Tauri as a fronte
 4. Tauri opens a webview pointing at `localhost:{port}`
 
 ```bash
-# Build native binary
+# Build native binary — run `mix ui.build` first so the argus SPA
+# (gitignored priv/static/argus/) ships inside the release
+mix ui.build
 mix release
 
 # Or set env for development

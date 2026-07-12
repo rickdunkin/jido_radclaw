@@ -145,6 +145,45 @@ defmodule JidoClaw.Orchestration.WorkflowEventProjectionTest do
     end
   end
 
+  describe "route_terminal_status/1 (pure)" do
+    # F1: the composer's post-append lifecycle broadcast maps the appended
+    # kind to the status it committed through this single source — all
+    # thirteen parent-terminal kinds (twelve `route_*` + the abnormal-path
+    # `:run_failed`), enumerated per family as the drift guard.
+    test "the completed family" do
+      for kind <- [:route_converged, :route_done_with_findings] do
+        assert Projection.route_terminal_status(kind) == {:ok, :completed}
+      end
+    end
+
+    test "the failed family (incl. the abnormal-path :run_failed)" do
+      for kind <-
+            [:route_verify_failed, :route_fix_failed, :route_review_infra_failed] ++
+              [:route_verify_tampered, :run_failed | @failed_kinds] do
+        assert Projection.route_terminal_status(kind) == {:ok, :failed},
+               "#{kind} must commit :failed"
+      end
+    end
+
+    test "the cancelled family (route_abandoned projects to :cancelled, never :abandoned)" do
+      for kind <- @cancelled_kinds do
+        assert Projection.route_terminal_status(kind) == {:ok, :cancelled}
+      end
+    end
+
+    test "anything else is :unknown, never a raise (total)" do
+      # Scoped to the composer's parent-terminal kinds: the plain lifecycle
+      # kinds other producers broadcast directly are deliberately NOT mapped.
+      for kind <- [:run_completed, :run_cancelled, :run_abandoned, :run_started] do
+        assert Projection.route_terminal_status(kind) == :unknown
+      end
+
+      assert Projection.route_terminal_status(:wave_completed) == :unknown
+      assert Projection.route_terminal_status("route_converged") == :unknown
+      assert Projection.route_terminal_status(nil) == :unknown
+    end
+  end
+
   describe "status_attrs/3 (pure)" do
     setup do
       {:ok, occurred_at: DateTime.utc_now()}

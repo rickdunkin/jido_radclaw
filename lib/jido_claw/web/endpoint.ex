@@ -19,11 +19,17 @@ defmodule JidoClaw.Web.Endpoint do
 
   socket("/ws", JidoClaw.Web.UserSocket, websocket: [connect_info: [session: @session_options]])
 
+  # Key-only argus SPA socket. `auth_token: true` must stay at the socket
+  # level: the endpoint macro overwrites a `websocket: [auth_token: ...]`
+  # entry with the socket-level value (nil when absent), silently disabling
+  # the Sec-WebSocket-Protocol token transport.
+  socket("/argus/ws", JidoClaw.Web.ArgusSocket, auth_token: true)
+
   plug(Plug.Static,
     at: "/",
     from: :jido_claw,
     gzip: false,
-    only: ~w(assets fonts images favicon.ico robots.txt)
+    only: ~w(assets fonts images favicon.ico robots.txt argus)
   )
 
   plug(Plug.RequestId)

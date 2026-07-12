@@ -1,0 +1,10 @@
+query RecentWorkflowRuns($limit: Int) {
+  recentWorkflowRuns(limit: $limit) {
+    id
+    name
+    workflowType
+    status
+    insertedAt
+    completedAt
+  }
+}

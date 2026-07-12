@@ -66,6 +66,20 @@ defmodule JidoClaw.Core.AshErrors do
   def connection_error?(_other), do: false
 
   @doc """
+  True when `error` is a not-found — a bare `Ash.Error.Query.NotFound` or
+  an `Ash.Error.Invalid` wrapping one (a `get?` read surfaces either
+  shape). Both mean "gone"; anything else is a real read failure the
+  caller should surface separately (infra ≠ absence).
+  """
+  @spec not_found_error?(term()) :: boolean()
+  def not_found_error?(%Ash.Error.Query.NotFound{}), do: true
+
+  def not_found_error?(%Ash.Error.Invalid{errors: errors}) when is_list(errors),
+    do: Enum.any?(errors, &not_found_error?/1)
+
+  def not_found_error?(_other), do: false
+
+  @doc """
   True when `error` is an `Ash.Error.Invalid` carrying at least one
   unique-constraint violation whose index name contains any of
   `index_fragments`. Recurses into nested `Ash.Error.Invalid` errors.

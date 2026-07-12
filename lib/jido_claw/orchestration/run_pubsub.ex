@@ -3,6 +3,22 @@ defmodule JidoClaw.Orchestration.RunPubSub do
 
   alias JidoClaw.Orchestration.WorkflowRun
 
+  # The canonical run-lifecycle kind inventory riding `orchestration:run:<id>`
+  # / `orchestration:runs` — every producer (reactor_middleware, reactor_runner,
+  # cancellation, cases, gate_disposition, route_composer) broadcasts one of
+  # these five, and `WorkflowsChannel` sources its allowlist from here so the
+  # producer set and the wire allowlist can never drift.
+  @lifecycle_kinds [:run_started, :run_completed, :run_failed, :run_cancelled, :run_abandoned]
+
+  @doc """
+  The five run-lifecycle event kinds. Composer `route_*` terminals never ride
+  the topics as their durable kind — they map onto this family by the status
+  they committed (completed/failed/cancelled); the disposition detail lives on
+  the run row, refetched by subscribers.
+  """
+  @spec lifecycle_kinds() :: [atom()]
+  def lifecycle_kinds, do: @lifecycle_kinds
+
   @spec run_topic(term()) :: String.t()
   def run_topic(run_id), do: "orchestration:run:#{run_id}"
 
@@ -78,9 +94,10 @@ defmodule JidoClaw.Orchestration.RunPubSub do
   @doc """
   Broadcast a run-lifecycle terminal on the run + runs topics — the ONE
   construction site for the dashboard-refresh payload (shared by
-  `Cases.abandon/3`, `Cancellation`, and `GateDisposition`). Pass the RELOADED
-  terminal run (a pre-terminal snapshot's `completed_at` is still nil) and the
-  terminal `status` explicitly — a degraded reload may hand back a pre-terminal
+  `Cases.abandon/3`, `Cancellation`, `GateDisposition`, and the composer's
+  post-append terminal announce). Pass the RELOADED terminal run (a
+  pre-terminal snapshot's `completed_at` is still nil) and the terminal
+  `status` explicitly — a degraded reload may hand back a pre-terminal
   snapshot, and the event must still carry the status that durably committed.
   """
   @spec broadcast_run_terminal(WorkflowRun.t(), atom(), atom()) :: :ok | {:error, term()}
@@ -94,6 +111,28 @@ defmodule JidoClaw.Orchestration.RunPubSub do
          workflow_type: run.workflow_type,
          status: status,
          completed_at: run.completed_at
+       }}
+    )
+  end
+
+  @doc """
+  Broadcast a run-lifecycle start on the run + runs topics — the
+  `broadcast_run_terminal/3` construction-site sibling for `{:run_started,
+  run_id, info}`. Used by the composer, whose parent never rides
+  `ReactorMiddleware` (the reactor-run start announcer): call it only after
+  the mint transaction commits, with the reloaded `:running` row.
+  """
+  @spec broadcast_run_started(WorkflowRun.t()) :: :ok | {:error, term()}
+  def broadcast_run_started(%WorkflowRun{} = run) do
+    broadcast(
+      run.id,
+      {:run_started, run.id,
+       %{
+         tenant_id: run.tenant_id,
+         name: run.name,
+         workflow_type: run.workflow_type,
+         status: :running,
+         completed_at: nil
        }}
     )
   end

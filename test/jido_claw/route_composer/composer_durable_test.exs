@@ -584,6 +584,65 @@ defmodule JidoClaw.RouteComposer.ComposerDurableTest do
   end
 
   # ===========================================================================
+  # Channels-remediation round 2 (review P1) — the post-commit lifecycle
+  # broadcasts are SHIELDED: `Phoenix.PubSub.broadcast/3` RAISES while its
+  # registry is down (`{:ok, _} = Registry.meta(...)`), and a raise at either
+  # notification seam must never undo or veto the already-durable result.
+  # ===========================================================================
+
+  describe "lifecycle broadcast shield" do
+    test "create_parent_run returns ok and commits :running while PubSub is down", ctx do
+      # PubSub lives under the one_for_one InfraSupervisor; resolve the child
+      # by pid (robust to the dep's child-id naming) and stop ONLY it. The
+      # supervisor's name atom already exists (Phoenix minted it at boot), so
+      # safe_concat resolves without creating atoms.
+      pubsub_sup = Process.whereis(Module.safe_concat(JidoClaw.PubSub, "Supervisor"))
+
+      {child_id, _, _, _} =
+        JidoClaw.InfraSupervisor
+        |> Supervisor.which_children()
+        |> Enum.find(fn {_id, pid, _type, _mods} -> pid == pubsub_sup end)
+
+      :ok = Supervisor.terminate_child(JidoClaw.InfraSupervisor, child_id)
+
+      on_exit(fn ->
+        # Tolerant restore — the in-test restart below already ran on the
+        # happy path; this covers a mid-test crash ({:error, :running} then).
+        _ = Supervisor.restart_child(JidoClaw.InfraSupervisor, child_id)
+      end)
+
+      log =
+        capture_log(fn ->
+          assert {:ok, parent} = RouteComposer.create_parent_run(base_opts(ctx))
+          assert reload(parent.id, ctx).status == :running
+        end)
+
+      {:ok, _} = Supervisor.restart_child(JidoClaw.InfraSupervisor, child_id)
+
+      assert log =~ "best-effort run_started broadcast failed"
+    end
+
+    test "notify_best_effort/3 swallows returned errors, raises, exits, and throws" do
+      assert :ok = RouteComposer.notify_best_effort("probe", "run-1", fn -> :ok end)
+
+      log =
+        capture_log(fn ->
+          assert :ok =
+                   RouteComposer.notify_best_effort("probe", "run-1", fn -> {:error, :down} end)
+
+          assert :ok = RouteComposer.notify_best_effort("probe", "run-1", fn -> raise "boom" end)
+          assert :ok = RouteComposer.notify_best_effort("probe", "run-1", fn -> exit(:kaboom) end)
+          assert :ok = RouteComposer.notify_best_effort("probe", "run-1", fn -> throw(:ball) end)
+        end)
+
+      assert log =~ ":down"
+      assert log =~ "boom"
+      assert log =~ ":kaboom"
+      assert log =~ ":ball"
+    end
+  end
+
+  # ===========================================================================
   # WS3 P1 — single-node parent-sidecar failure SUSPENDS the claim (NULL expiry,
   # token kept) so the always-on Pooler can't reclaim a live, heartbeat-less
   # composer, then proceeds degraded only when the suspend took.

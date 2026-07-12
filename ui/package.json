@@ -1,0 +1,57 @@
+{
+  "name": "argus-ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "tsr generate && graphql-codegen --config codegen.ts",
+    "dev": "vp dev",
+    "build": "tsc -b && vp build",
+    "check": "vp check",
+    "test": "vp test",
+    "lint": "vp lint",
+    "fmt": "vp fmt",
+    "preview": "vp preview"
+  },
+  "dependencies": {
+    "@apollo/client": "^4.2.6",
+    "@tanstack/react-router": "^1.170.17",
+    "graphql": "^17.0.2",
+    "phoenix": "1.8.9",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@graphql-codegen/cli": "^7.2.0",
+    "@graphql-codegen/typed-document-node": "^7.1.0",
+    "@graphql-codegen/typescript": "^6.1.0",
+    "@graphql-codegen/typescript-operations": "^6.1.0",
+    "@graphql-typed-document-node/core": "^3.2.0",
+    "@tailwindcss/vite": "^4.3.2",
+    "@tanstack/router-cli": "^1.167.18",
+    "@tanstack/router-plugin": "^1.168.19",
+    "@testing-library/dom": "^10.4.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^24.13.2",
+    "@types/phoenix": "^1.6.7",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.3",
+    "happy-dom": "^20.10.6",
+    "tailwindcss": "^4.3.2",
+    "typescript": "~7.0.2",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.11.0",
+      "onFail": "download"
+    }
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

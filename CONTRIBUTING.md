@@ -8,6 +8,7 @@ JidoClaw is built on the [Jido](https://github.com/agentjido/jido) framework eco
 - Erlang/OTP >= 27
 - Git
 - Ollama (recommended for local development — `brew install ollama && ollama serve`)
+- Node.js >= 24 + pnpm 11 — only for `ui/` (the argus SPA); `mise install` provides both from `mise.toml`
 
 ## Getting Started
 
@@ -35,6 +36,12 @@ mix test --failed                       # re-run failures
 mix format                              # format all files
 mix format --check-formatted            # CI check
 mix compile --warnings-as-errors        # strict compile
+```
+
+Touching `ui/` (the argus SPA)? Run its gate too:
+
+```bash
+pnpm --dir ui codegen && pnpm --dir ui check && pnpm --dir ui test && pnpm --dir ui build
 ```
 
 ## Code Style

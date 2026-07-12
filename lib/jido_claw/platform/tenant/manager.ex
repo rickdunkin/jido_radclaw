@@ -8,6 +8,7 @@ defmodule JidoClaw.Tenant.Manager do
 
   alias JidoClaw.Tenant.InstanceSupervisor
   alias JidoClaw.Tenants.Tenant, as: TenantRow
+  alias JidoClaw.Web.ArgusSocket
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -250,6 +251,13 @@ defmodule JidoClaw.Tenant.Manager do
   end
 
   defp sync_runtime_supervisor(id, status, _cached?) when status in [:suspended, :terminating] do
+    # Best-effort transport teardown beside the runtime stop: drops every
+    # live argus socket of the tenant cluster-wide. Direct PubSub, not
+    # Endpoint.broadcast, so a suspension initiated on a CLI/MCP node (no
+    # local Endpoint) still reaches gateway nodes (accepted platform→web
+    # layering wrinkle — a transport-control message doesn't belong on the
+    # Jido Signal bus).
+    _ = ArgusSocket.disconnect_tenant(id)
     InstanceSupervisor.stop_instance(id)
   end
 

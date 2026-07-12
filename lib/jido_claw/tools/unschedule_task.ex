@@ -17,6 +17,7 @@ defmodule JidoClaw.Tools.UnscheduleTask do
     ]
 
   alias JidoClaw.Authorization.Actor
+  alias JidoClaw.Core.AshErrors
   alias JidoClaw.Cron.Job
   alias JidoClaw.Cron.Owner, as: CronOwner
 
@@ -60,18 +61,11 @@ defmodule JidoClaw.Tools.UnscheduleTask do
     end
   end
 
-  # A get? read surfaces not-found either bare or wrapped in Ash.Error.Invalid;
-  # both mean "gone", anything else is a real read failure worth surfacing.
+  # Not-found (bare or Invalid-wrapped) means "gone"; anything else is a
+  # real read failure worth surfacing.
   defp read_error(reason) do
-    if not_found_error?(reason),
+    if AshErrors.not_found_error?(reason),
       do: {:error, :not_found},
       else: {:error, {:read_failed, reason}}
   end
-
-  defp not_found_error?(%Ash.Error.Query.NotFound{}), do: true
-
-  defp not_found_error?(%Ash.Error.Invalid{errors: errors}) when is_list(errors),
-    do: Enum.any?(errors, &not_found_error?/1)
-
-  defp not_found_error?(_), do: false
 end

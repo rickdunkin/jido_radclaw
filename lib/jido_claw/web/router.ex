@@ -29,6 +29,13 @@ defmodule JidoClaw.Web.Router do
     plug(JidoClaw.Web.Plugs.GraphiqlGuard)
   end
 
+  # Static SPA shell only — no session, no CSRF, no layout; the SPA's data
+  # access happens over /gql with its own key auth.
+  pipeline :argus do
+    plug(:accepts, ["html"])
+    plug(:put_secure_browser_headers)
+  end
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -114,6 +121,16 @@ defmodule JidoClaw.Web.Router do
         default_url: "/gql"
       )
     end
+  end
+
+  # Node-served argus SPA (argus P3). Plug.Static (endpoint, runs before
+  # the router) serves the hashed build assets under /argus; everything
+  # else falls through here so client-side routes survive refresh.
+  scope "/argus", JidoClaw.Web do
+    pipe_through(:argus)
+
+    get("/", ArgusController, :index)
+    get("/*path", ArgusController, :index)
   end
 
   # GitHub webhooks (HMAC verified in controller)

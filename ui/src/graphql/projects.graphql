@@ -1,0 +1,10 @@
+query Projects($limit: Int) {
+  projects(limit: $limit) {
+    id
+    name
+    githubFullName
+    defaultBranch
+    insertedAt
+    updatedAt
+  }
+}

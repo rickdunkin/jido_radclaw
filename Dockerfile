@@ -22,6 +22,9 @@ RUN mix deps.get --only prod && \
     mix deps.compile
 
 COPY lib lib
+# priv/static/argus/ (the built argus SPA, gitignored but NOT dockerignored)
+# ships in the release when present — run `mix ui.build` on the host before
+# `docker build`; the image build itself stays node-free.
 COPY priv priv
 
 RUN mix compile && \

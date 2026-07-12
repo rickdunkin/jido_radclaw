@@ -201,6 +201,21 @@ defmodule JidoClaw.Core.AshErrorsTest do
     end
   end
 
+  describe "not_found_error?/1" do
+    test "matches bare and Invalid-wrapped NotFound" do
+      bare = %Ash.Error.Query.NotFound{resource: Message}
+
+      assert AshErrors.not_found_error?(bare)
+      assert AshErrors.not_found_error?(invalid_error([bare]))
+    end
+
+    test "rejects everything else (infra is never absence)" do
+      refute AshErrors.not_found_error?(%DBConnection.ConnectionError{})
+      refute AshErrors.not_found_error?(:timeout)
+      refute AshErrors.not_found_error?(invalid_error([Required.exception(field: :name)]))
+    end
+  end
+
   describe "db_errors/0" do
     test "returns the exact canonical rescue list" do
       # Pins the single source of truth for `rescue _ in @db_errors` sites

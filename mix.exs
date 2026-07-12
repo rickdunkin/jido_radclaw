@@ -261,6 +261,17 @@ defmodule JidoClaw.MixProject do
       # clean checkout must run it before the dashboard has working JS.
       setup: ["deps.get", "ash.setup", "assets.build"],
       "assets.build": ["esbuild jido_claw"],
+      # The argus SPA artifact (priv/static/argus/, gitignored). Deliberately
+      # NOT in setup or precommit — both stay node-free; run this when ui/
+      # changes and before `mix release` / image assembly. install + codegen
+      # first so it works on any checkout: both are fast no-ops when current,
+      # and codegen reads only the committed ui/schema.graphql golden, so the
+      # whole chain is offline-safe.
+      "ui.build": [
+        "cmd pnpm --dir ui install",
+        "cmd pnpm --dir ui codegen",
+        "cmd pnpm --dir ui build"
+      ],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ash.setup --quiet", "test"],
