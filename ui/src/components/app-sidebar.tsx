@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { NavBadge } from "@/components/nav-badge";
+import { NavBadge } from "@/components/system/nav-badge";
 import { NodeHealth } from "@/components/node-health";
 import {
   Sidebar,
@@ -74,8 +74,12 @@ export function AppSidebar() {
                       render={<Link {...entry.link} />}
                     >
                       {entry.label}
-                      {entry.badge === "attention" && <NavBadge count={data.attentionCount} />}
-                      {entry.badge === "approvals" && <NavBadge count={data.approvalsCount} />}
+                      {entry.badge === "attention" && (
+                        <NavBadge count={data.attentionCount} className="ml-auto" />
+                      )}
+                      {entry.badge === "approvals" && (
+                        <NavBadge count={data.approvalsCount} className="ml-auto" />
+                      )}
                       {entry.id === "runs" && (
                         <>
                           <span

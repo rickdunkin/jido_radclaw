@@ -1,5 +1,6 @@
 import { type AttentionItem, needsYou } from "@/lib/attention-data";
 import { cn } from "@/lib/utils";
+import { Chevron } from "./chevron";
 import { FeedAction } from "./feed-action";
 import { FeedChip } from "./feed-chip";
 import { MetaLine } from "./meta-line";
@@ -75,10 +76,12 @@ export function FeedRow({
   item,
   variant,
   showProject,
+  className,
 }: {
   item: AttentionItem;
   variant: "card" | "row";
   showProject: boolean;
+  className?: string;
 }) {
   const style = KIND_STYLE[item.kind];
   const projectSegment = showProject ? [item.project] : [];
@@ -99,6 +102,7 @@ export function FeedRow({
           ? "rounded-lg bg-popover p-3 shadow-xs @3xl/feed:px-3.5 dark:shadow-none"
           : "relative px-3.5 py-[11px] before:absolute before:inset-x-3.5 before:top-0 before:h-px before:bg-border first:before:hidden",
         item.kind === "resolved" && "opacity-[.62]",
+        className,
       )}
     >
       <StatusIconChip
@@ -192,19 +196,6 @@ function Age({ age, className }: { age: string; className?: string }) {
       )}
     >
       {age}
-    </span>
-  );
-}
-
-// Inert affordance hint — never focusable, never announced.
-function Chevron({ className }: { className?: string }) {
-  return (
-    <span
-      aria-hidden="true"
-      data-slot="feed-chevron"
-      className={cn("shrink-0 self-center text-[0.9375rem]", className)}
-    >
-      ›
     </span>
   );
 }

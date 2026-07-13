@@ -160,6 +160,36 @@ test("node footer renders proven rows: two online, basalt offline with visible m
   expect(within(sidebar).getAllByText("online")).toHaveLength(2);
 });
 
+test("node dots are StatusDot vocabulary: green online fill, hollow basalt offline", async () => {
+  renderAt("/");
+  await settle();
+  const { sidebar } = shellScopes();
+
+  for (const name of ["atlas", "wren"]) {
+    const row = within(sidebar).getByText(name).closest("li");
+    if (!row) throw new Error(`${name} row not rendered`);
+    const nodeDots = row.querySelectorAll('[data-slot="status-dot"]');
+    expect(nodeDots).toHaveLength(1);
+    const dot = nodeDots[0];
+    expect(dot.getAttribute("data-status")).toBe("online");
+    expect(dot.getAttribute("aria-hidden")).toBe("true");
+    // online borrows done's green fill recipe (one all-quiet green), sm.
+    for (const cls of ["bg-status-done", "size-1.5", "rounded-full"]) {
+      expect(dot.classList.contains(cls), `${name} → ${cls}`).toBe(true);
+    }
+  }
+
+  const basaltRow = within(sidebar).getByText("basalt").closest("li");
+  if (!basaltRow) throw new Error("basalt row not rendered");
+  const offlineDots = basaltRow.querySelectorAll('[data-slot="status-dot"]');
+  expect(offlineDots).toHaveLength(1);
+  expect(offlineDots[0].getAttribute("data-status")).toBe("offline");
+  expect(offlineDots[0].getAttribute("aria-hidden")).toBe("true");
+  for (const cls of ["border", "border-status-offline", "size-1.5"]) {
+    expect(offlineDots[0].classList.contains(cls), `offline → ${cls}`).toBe(true);
+  }
+});
+
 test("tab bar carries exactly the four phone tabs — no Runs, no Board", async () => {
   renderAt("/");
   await settle();

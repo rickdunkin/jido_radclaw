@@ -1,7 +1,8 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { FeedRow } from "@/components/feed/feed-row";
-import { GroupPanel } from "@/components/feed/group-panel";
-import { SectionLabel } from "@/components/feed/section-label";
+import { Chevron } from "@/components/system/chevron";
+import { FeedRow } from "@/components/system/feed-row";
+import { GroupPanel } from "@/components/system/group-panel";
+import { SectionLabel } from "@/components/system/section-label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   deriveAttentionSummary,
@@ -239,13 +240,7 @@ function QuietProjectRow({ group }: { group: ProjectGroup }) {
             </span>
             {` ${group.quietLine.verb} ${group.quietLine.age} ago, nothing needs you`}
           </p>
-          <span
-            aria-hidden="true"
-            data-slot="feed-chevron"
-            className="shrink-0 text-[0.9375rem] text-muted-foreground/60"
-          >
-            ›
-          </span>
+          <Chevron className="text-muted-foreground/60" />
         </li>
       </ul>
     </section>

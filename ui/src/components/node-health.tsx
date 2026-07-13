@@ -1,3 +1,4 @@
+import { StatusDot } from "@/components/system/status-dot";
 import type { ShellNode } from "@/lib/shell-data";
 
 // Rail footer node roster. Deviation from the mock's dimmed rows: name and
@@ -12,14 +13,11 @@ export function NodeHealth({ nodes }: { nodes: ShellNode[] }) {
         <li key={node.name} className="flex items-center gap-[7px] text-muted-foreground">
           {node.online ? (
             <>
-              <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-status-done" />
+              <StatusDot status="online" size="sm" />
               <span className="sr-only">online</span>
             </>
           ) : (
-            <span
-              aria-hidden
-              className="size-1.5 shrink-0 rounded-full border border-status-offline"
-            />
+            <StatusDot status="offline" size="sm" />
           )}
           {node.name}
           <span className="ml-auto">{node.meta}</span>

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stop/SubagentStop gate for the Plan agent: reviews the draft plan
 # with a headless `codex exec` run. A {"ok": false} verdict blocks the stop
-# and feeds the reason back as revision instructions; the agent revises and
+# and feeds the findings back as revision instructions; the agent revises and
 # the gate re-fires (bounded by MAX_ROUNDS). Every unexpected failure exits
 # 0/1 — never 2 — so a broken reviewer fails open and the plan proceeds.
 #
@@ -9,7 +9,8 @@
 # Allow shape: silent exit 0.
 #
 # Twin: exitplan-codex-review.sh (PreToolUse gate on ExitPlanMode) — the
-# review-guideline block is shared verbatim; keep the two byte-identical.
+# guideline, output-contract, schema, and findings-render blocks are shared
+# verbatim; keep them byte-identical.
 #
 # Knobs (env, shared with the twin):
 #   PLAN_REVIEW_MODEL           -> passed as `codex -m` (default: codex's default)
@@ -88,9 +89,46 @@ cat >"$schema" <<'EOF'
   "type": "object",
   "properties": {
     "ok": { "type": "boolean" },
-    "reason": { "type": "string" }
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "body": { "type": "string" },
+          "suggestion": { "type": "string" },
+          "confidence_score": { "type": "number" },
+          "priority": { "type": "integer" },
+          "code_location": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "absolute_file_path": { "type": "string" },
+                  "line_range": {
+                    "type": "object",
+                    "properties": {
+                      "start": { "type": "integer" },
+                      "end": { "type": "integer" }
+                    },
+                    "required": ["start", "end"],
+                    "additionalProperties": false
+                  }
+                },
+                "required": ["absolute_file_path", "line_range"],
+                "additionalProperties": false
+              },
+              { "type": "null" }
+            ]
+          }
+        },
+        "required": ["title", "body", "suggestion", "confidence_score", "priority", "code_location"],
+        "additionalProperties": false
+      }
+    },
+    "overall_explanation": { "type": "string" }
   },
-  "required": ["ok", "reason"],
+  "required": ["ok", "findings", "overall_explanation"],
   "additionalProperties": false
 }
 EOF
@@ -123,9 +161,8 @@ fi
 
 # Static guideline block in a QUOTED heredoc: apostrophes and the backtick
 # fences are literal here — in an unquoted heredoc the backticks command-
-# substitute and swallow the text between the fences (that mangling shipped
-# until 2026-07-12). Shared verbatim with exitplan-codex-review.sh — keep
-# the two blocks byte-identical.
+# substitute and swallow the text between the fences. Shared verbatim with
+# exitplan-codex-review.sh — keep the two blocks byte-identical.
 IFS= read -r -d '' guidelines <<'EOF' || true
 Below are some default guidelines for determining whether the original author would appreciate the issue being flagged.
 
@@ -170,26 +207,59 @@ GUIDELINES:
 
 You should avoid providing unnecessary location details in the comment body. Always keep the line range as short as possible for interpreting the issue. Avoid ranges longer than 5–10 lines; instead, choose the most suitable subrange that pinpoints the problem.
 
-At the beginning of the finding title, tag the bug with priority level. For example "[P1] Un-padding slices along wrong tensor dimensions". [P0] – Drop everything to fix.  Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
+At the beginning of all finding titles, tag the bug with priority level. For example "[P1] Un-padding slices along wrong tensor dimensions". [P0] – Drop everything to fix.  Blocking release, operations, or major usage. Only use for universal issues that do not depend on any assumptions about the inputs. · [P1] – Urgent. Should be addressed in the next cycle · [P2] – Normal. To be fixed eventually · [P3] – Low. Nice to have.
+EOF
+
+# Output contract in a QUOTED heredoc for the same reason (the json fence
+# backticks must stay literal). Shared verbatim with the twin — keep the two
+# blocks byte-identical.
+IFS= read -r -d '' output_contract <<'EOF' || true
+OUTPUT FORMAT:
+
+## Output schema — MUST MATCH *exactly*
+
+```json
+{
+  "ok": <boolean>,
+  "findings": [
+    {
+      "title": "<≤ 80 chars, imperative>",
+      "body": "<valid Markdown explaining *why* this is a problem; cite files/lines/functions>",
+      "suggestion": "<valid Markdown suggestion for a potential fix>",
+      "confidence_score": <float 0.0-1.0>,
+      "priority": <int 0-3>,
+      "code_location": {
+        "absolute_file_path": "<file path>",
+        "line_range": {"start": <int>, "end": <int>}
+      }
+    }
+  ],
+  "overall_explanation": "<1-3 sentence explanation justifying the ok verdict>"
+}
+```
+
+* **Do not** wrap the JSON in markdown fences or extra prose.
+* "ok" MUST be false if and only if "findings" is non-empty; include ONLY findings that should block approval of this plan.
+* "findings" must list EVERY qualifying finding, not just the first or most severe.
+* "code_location" must cite a real repository file (absolute path) when the finding is about existing code; use null for findings about the plan itself (omissions, sequencing, scope).
+* Line ranges must be as short as possible for interpreting the issue (avoid ranges over 5–10 lines; pick the most suitable subrange).
 EOF
 
 # read -d '' (not prompt=$(cat <<EOF)): macOS /bin/bash 3.2 scans $( ) for
 # its closing paren without understanding heredocs, so apostrophes in the
 # text would break parsing. read hits EOF without a NUL → || true. Only
 # variable expansions appear in this unquoted heredoc's literal text —
-# $guidelines/$plan/$prior expand as data and are never re-parsed.
+# $guidelines/$output_contract/$plan/$prior expand as data and are never
+# re-parsed.
 IFS= read -r -d '' prompt <<EOF || true
-You are gating a draft implementation plan for the repository at your working directory. You have read-only access. Please review this plan for anything that sticks out as incorrect, a gap, a potential regression, or just something that could be done better or maybe more idiomatically elixir/ash/jido
+You are gating a draft implementation plan for the repository at your working directory. You have read-only access. Please review this plan for anything that sticks out as incorrect, a gap, a potential regression, or just something that could be done better or maybe more idiomatically elixir/ash/jido, or react/tailwind/shadcn/apollo if frontend code
 
 $guidelines
 Accept if the message is an explicit report that planning is blocked pending
 user input, rather than a plan.
 $revision_note
 
-Your final message must be **exactly one JSON object** matching the provided schema:
-{"ok": true, "reason": "<one line>"} **to accept**, or
-{"ok": false, "reason": "<specific, actionable revision instructions>"} **to reject**.
-
+$output_contract
 Draft plan follows:
 ---
 $plan
@@ -214,6 +284,7 @@ codex exec \
   -c 'notify=[]' \
   -c "model_reasoning_effort=\"$effort\"" \
   -c 'model_reasoning_summary="concise"' \
+  -c 'fast_mode=true' \
   -c 'project_doc_max_bytes=150000' \
   --output-schema "$schema" \
   --output-last-message "$verdict_file" \
@@ -223,8 +294,29 @@ codex exec \
 verdict=$(jq -c '.' "$verdict_file" 2>/dev/null) || exit 0 # unparseable → open
 ok=$(jq -r '.ok' <<<"$verdict")
 
+# Render the findings array into numbered markdown feedback: the rendered
+# text is both the deny reason and the stored prior feedback for the next
+# round. The [P#] tag comes from the priority field (stripped from the title
+# if the model tagged it there too); ok=false with zero findings falls back
+# to overall_explanation, and a render failure falls back rather than
+# failing the gate.
+render_findings='
+if (.findings // []) | length == 0 then
+  (.overall_explanation // "Revise the plan per review.")
+else
+  [ .findings[]
+    | "[P\(.priority // "?")] "
+      + ((.title // "(untitled)") | sub("^\\[P[0-9]\\]\\s*"; ""))
+      + (if .code_location then " — \(.code_location.absolute_file_path):\(.code_location.line_range.start // "?")-\(.code_location.line_range.end // "?")" else "" end)
+      + " (confidence \(.confidence_score // "?"))\n"
+      + (.body // "")
+      + (if (.suggestion // "") != "" then "\nSuggestion: \(.suggestion)" else "" end)
+  ] | to_entries | map("\(.key + 1). \(.value)") | join("\n\n")
+end'
+
 if [[ "$ok" == "false" ]]; then
-  reason=$(jq -r '.reason // "Revise the plan per review."' <<<"$verdict")
+  reason=$(jq -r "$render_findings" <<<"$verdict" 2>/dev/null) || reason=""
+  [[ -z "$reason" ]] && reason="Revise the plan per review."
   echo $((rounds + 1)) >"$counter"
   printf '%s' "$reason" >"$prior_file"
   msg="Codex plan review (round $((rounds + 1))/$MAX_ROUNDS) rejected this draft:

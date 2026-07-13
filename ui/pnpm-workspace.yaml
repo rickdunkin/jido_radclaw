@@ -1,3 +1,7 @@
+allowBuilds:
+  # Transitive optional dep of @tailwindcss/cli (canonicalize tooling);
+  # its native build only serves --watch, which we never run.
+  "@parcel/watcher": false
 catalog:
   vite: npm:@voidzero-dev/vite-plus-core@0.2.4
   vite-plus: 0.2.4
