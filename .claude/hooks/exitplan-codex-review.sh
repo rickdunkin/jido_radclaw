@@ -1,15 +1,30 @@
 #!/usr/bin/env bash
-# Stop/SubagentStop gate for the Plan agent: reviews the draft plan
-# with a headless `codex exec` run. A {"ok": false} verdict blocks the stop
-# and feeds the reason back as revision instructions; the agent revises and
-# the gate re-fires (bounded by MAX_ROUNDS). Every unexpected failure exits
-# 0/1 — never 2 — so a broken reviewer fails open and the plan proceeds.
+# PreToolUse gate for ExitPlanMode: reviews the plan file the main
+# conversation is about to present for approval, via a headless `codex exec`
+# run. A {"ok": false} verdict denies the tool call and feeds the reason back
+# to the model as revision instructions; the model revises the plan file and
+# re-calls ExitPlanMode, re-firing the gate (bounded by MAX_ROUNDS). Budget
+# exhaustion downgrades to permissionDecision "ask" — the normal plan dialog,
+# with the last objection attached — instead of a silent pass.
 #
-# Block shape (SubagentStop/Stop): exit 0 + {"decision":"block","reason":...}
+# ExitPlanMode carries NO plan text in tool_input on this build (2.1.207):
+# the model writes the plan to plansDirectory (.claude/plans/) BEFORE calling,
+# so the gate reads the newest recently-written *.md there.
+#
+# Fail-open discipline: every unexpected failure exits 0/1 — NEVER 2. On
+# PreToolUse, exit 2 BLOCKS the call (opposite of Stop hooks), so a broken
+# reviewer must exit 0/1 to let the plan through. The only block path is the
+# deliberate exit-0 deny JSON.
+#
+# Block shape (PreToolUse): exit 0 + {"hookSpecificOutput":{"hookEventName":
+# "PreToolUse","permissionDecision":"deny","permissionDecisionReason":...}}
 # Allow shape: silent exit 0.
 #
-# Twin: exitplan-codex-review.sh (PreToolUse gate on ExitPlanMode) — the
-# review-guideline block is shared verbatim; keep the two byte-identical.
+# Twin: plan-codex-review.sh (SubagentStop gate on the Plan agent override).
+# The review-guideline block is shared verbatim — keep the two byte-identical.
+# Deliberate divergence: no "blocked pending user input" acceptance clause
+# (a plan file at ExitPlanMode time must BE a plan; open questions belong in
+# AskUserQuestion before exiting plan mode).
 #
 # Knobs (env, shared with the twin):
 #   PLAN_REVIEW_MODEL           -> passed as `codex -m` (default: codex's default)
@@ -18,35 +33,73 @@
 #   PLAN_REVIEW_CONVERGE_ROUNDS trailing rounds where the re-review narrows to
 #                               prior-feedback-only (default 1 = final round only;
 #                               earlier revision rounds re-review the whole plan)
-# Debug: state + per-run codex logs live in ${TMPDIR:-/tmp}/plan-codex-review/
+# Debug: state + per-run codex logs live in ${TMPDIR:-/tmp}/exitplan-codex-review/
 set -euo pipefail
 
 # Breadcrumb preamble: every firing leaves a trace (fired.log + raw stdin)
-# BEFORE any guard can silently exit, so a no-op gate is diagnosable.
-state="${TMPDIR:-/tmp}/plan-codex-review"
+# BEFORE any guard can silently exit, so a no-op gate is diagnosable. Guard
+# exits log their reason for the same purpose.
+state="${TMPDIR:-/tmp}/exitplan-codex-review"
 mkdir -p "$state" 2>/dev/null || state="/tmp"
 log() { echo "$(date '+%F %T') pid=$$ $*" >>"$state/fired.log" 2>/dev/null || true; }
 input=$(cat || true)
-log "fired PATH=$PATH"
+log "fired"
 printf '%s' "$input" >"$state/last-stdin.json" 2>/dev/null || true
 
 command -v jq >/dev/null 2>&1 || exit 0
 
-# 2.1.207 quirk: the settings-level "Plan" matcher also fires for type-less
-# background utility agents (agent_type == "", e.g. the next-step-suggestion
-# generator) — each stray would burn a codex call. Exact-match the agent type
-# (keep in sync with the settings matcher and the agent file's name:).
-[[ "$(jq -r '.agent_type // empty' <<<"$input")" == "Plan" ]] || exit 0
+[[ "$(jq -r '.tool_name // empty' <<<"$input")" == "ExitPlanMode" ]] || {
+  log "skip: tool_name != ExitPlanMode"
+  exit 0
+}
 
-command -v codex >/dev/null 2>&1 || exit 0
+# Main conversation only: agent_id is present iff the hook fired inside a
+# subagent (subagents rarely have ExitPlanMode, but fail toward not gating).
+agent_id=$(jq -r '.agent_id // empty' <<<"$input")
+[[ -n "$agent_id" ]] && {
+  log "skip: subagent agent_id=$agent_id"
+  exit 0
+}
 
-plan=$(jq -r '.last_assistant_message // empty' <<<"$input")
-[[ -z "$plan" ]] && exit 0
+# Out-of-plan-mode ExitPlanMode calls are model mistakes the tool itself
+# rejects — don't burn a codex run reviewing a stale plan file for them.
+mode=$(jq -r '.permission_mode // empty' <<<"$input")
+[[ "$mode" == "plan" ]] || {
+  log "skip: permission_mode=${mode:-absent}"
+  exit 0
+}
+
+command -v codex >/dev/null 2>&1 || {
+  log "skip: no codex on PATH"
+  exit 0
+}
 
 session=$(jq -r '.session_id // "nosession"' <<<"$input")
-agent=$(jq -r '.agent_id // "main"' <<<"$input")
 cwd=$(jq -r '.cwd // empty' <<<"$input")
 [[ -z "$cwd" || ! -d "$cwd" ]] && cwd="${CLAUDE_PROJECT_DIR:-$PWD}"
+
+# Plan source: newest *.md in plansDirectory, but only if freshly written —
+# the model writes the plan file moments before calling ExitPlanMode, so a
+# stale newest file means we'd review the WRONG plan. Skip (fail open)
+# rather than deny real work with feedback about yesterday's plan.
+plans_dir="${CLAUDE_PROJECT_DIR:-$cwd}/.claude/plans"
+plan_file=""
+if [[ -d "$plans_dir" ]]; then
+  candidates=$(ls -t "$plans_dir"/*.md 2>/dev/null || true)
+  newest=$(head -n1 <<<"$candidates")
+  if [[ -n "$newest" && -n "$(find "$newest" -mmin -60 2>/dev/null)" ]]; then
+    plan_file="$newest"
+  fi
+fi
+[[ -z "$plan_file" ]] && {
+  log "skip: no fresh plan file in $plans_dir"
+  exit 0
+}
+plan=$(cat "$plan_file" 2>/dev/null || true)
+[[ -z "$plan" ]] && {
+  log "skip: empty plan file $plan_file"
+  exit 0
+}
 
 MAX_ROUNDS="${PLAN_REVIEW_MAX_ROUNDS:-3}"
 
@@ -67,19 +120,25 @@ case "$effort" in
 esac
 
 find "$state" -type f -mtime +1 -delete 2>/dev/null || true
-key="${session}-${agent}"
+key="$session"
 counter="$state/$key.count"
 prior_file="$state/$key.feedback"
 verdict_file="$state/$key.verdict.json"
 log_file="$state/$key.log"
 
-# Revision budget: our own counter. Deliberately not stop_hook_active
-# (Stop-documented, unverified on SubagentStop, and it would cap at one
-# round) nor the 8-consecutive-blocks override (likewise Stop-documented).
+# Revision budget: our own counter — PreToolUse has no built-in deny cap
+# (the 8-consecutive-blocks override is Stop-only). At exhaustion, downgrade
+# to "ask" so the user sees the surviving objection in the approval dialog
+# instead of the gate silently vanishing.
 rounds=$(cat "$counter" 2>/dev/null || echo 0)
 if ((rounds >= MAX_ROUNDS)); then
+  last=$(cat "$prior_file" 2>/dev/null || true)
   rm -f "$counter" "$prior_file"
-  exit 0 # budget spent — let the plan through rather than loop forever
+  log "budget exhausted after $rounds rounds -> ask"
+  msg="Codex plan review budget exhausted ($rounds rounds). Unresolved objection: ${last:-none recorded}"
+  jq -cn --arg r "$msg" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "ask", permissionDecisionReason: $r}}'
+  exit 0
 fi
 
 schema="$state/verdict.schema.json"
@@ -122,10 +181,8 @@ EOF
 fi
 
 # Static guideline block in a QUOTED heredoc: apostrophes and the backtick
-# fences are literal here — in an unquoted heredoc the backticks command-
-# substitute and swallow the text between the fences (that mangling shipped
-# until 2026-07-12). Shared verbatim with exitplan-codex-review.sh — keep
-# the two blocks byte-identical.
+# fences are literal here (in an unquoted heredoc the backticks command-
+# substitute and swallow the text between the fences).
 IFS= read -r -d '' guidelines <<'EOF' || true
 Below are some default guidelines for determining whether the original author would appreciate the issue being flagged.
 
@@ -175,22 +232,21 @@ EOF
 
 # read -d '' (not prompt=$(cat <<EOF)): macOS /bin/bash 3.2 scans $( ) for
 # its closing paren without understanding heredocs, so apostrophes in the
-# text would break parsing. read hits EOF without a NUL → || true. Only
-# variable expansions appear in this unquoted heredoc's literal text —
-# $guidelines/$plan/$prior expand as data and are never re-parsed.
+# text would break parsing. read hits EOF without a NUL -> || true. Only
+# variable expansions appear in this unquoted heredoc's literal text — no
+# backticks, no apostrophes ($guidelines/$plan/$prior expand as data and are
+# never re-parsed).
 IFS= read -r -d '' prompt <<EOF || true
-You are gating a draft implementation plan for the repository at your working directory. You have read-only access. Please review this plan for anything that sticks out as incorrect, a gap, a potential regression, or just something that could be done better or maybe more idiomatically elixir/ash/jido
+You are gating a finalized implementation plan for the repository at your working directory — the plan is about to be presented to the user for approval. You have read-only access. Please review this plan for anything that sticks out as incorrect, a gap, a potential regression, or just something that could be done better or maybe more idiomatically elixir/ash/jido
 
 $guidelines
-Accept if the message is an explicit report that planning is blocked pending
-user input, rather than a plan.
 $revision_note
 
 Your final message must be **exactly one JSON object** matching the provided schema:
 {"ok": true, "reason": "<one line>"} **to accept**, or
 {"ok": false, "reason": "<specific, actionable revision instructions>"} **to reject**.
 
-Draft plan follows:
+Plan file ($plan_file) follows:
 ---
 $plan
 EOF
@@ -218,23 +274,32 @@ codex exec \
   --output-schema "$schema" \
   --output-last-message "$verdict_file" \
   ${model_args[@]+"${model_args[@]}"} \
-  - <<<"$prompt" >"$log_file" 2>&1 || exit 0 # reviewer infra failure → open
+  - <<<"$prompt" >"$log_file" 2>&1 || {
+  log "codex infra failure -> open"
+  exit 0
+}
 
-verdict=$(jq -c '.' "$verdict_file" 2>/dev/null) || exit 0 # unparseable → open
+verdict=$(jq -c '.' "$verdict_file" 2>/dev/null) || {
+  log "unparseable verdict -> open"
+  exit 0
+}
 ok=$(jq -r '.ok' <<<"$verdict")
 
 if [[ "$ok" == "false" ]]; then
   reason=$(jq -r '.reason // "Revise the plan per review."' <<<"$verdict")
   echo $((rounds + 1)) >"$counter"
   printf '%s' "$reason" >"$prior_file"
-  msg="Codex plan review (round $((rounds + 1))/$MAX_ROUNDS) rejected this draft:
+  log "deny round $((rounds + 1))/$MAX_ROUNDS"
+  msg="Codex plan review (round $((rounds + 1))/$MAX_ROUNDS) rejected this plan:
 
 $reason
 
-Address the feedback and emit the complete revised plan as your final message — the entire plan again, not a description of the changes."
-  jq -cn --arg r "$msg" '{decision: "block", reason: $r}'
+Address the feedback by revising the plan file in place ($plan_file), then call ExitPlanMode again."
+  jq -cn --arg r "$msg" \
+    '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'
   exit 0
 fi
 
+log "allow"
 rm -f "$counter" "$prior_file"
 exit 0

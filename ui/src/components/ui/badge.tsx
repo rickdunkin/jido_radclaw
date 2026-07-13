@@ -17,10 +17,21 @@ const badgeVariants = cva(
         ghost: "hover:bg-muted hover:text-muted-foreground dark:hover:bg-muted/50",
         link: "text-primary underline-offset-4 hover:underline",
         waiting: "bg-status-waiting-solid text-status-waiting-solid-foreground",
+        // Feed-chip tints (mock 5a/2a): the solid `waiting` above stays
+        // reserved for NavBadge/CTAs; the age chip uses the subtle tint.
+        "waiting-subtle": "bg-status-waiting/12 text-status-waiting",
+        muted: "bg-muted text-muted-foreground",
+      },
+      size: {
+        default: "",
+        // Feed-chip geometry (mock age/×N chips: mono 600 10.5px, 2px 8px
+        // padding, fully round). h-auto beats the base h-5, NavBadge-style.
+        feed: "h-auto rounded-full px-2 py-0.5 font-mono text-[0.65625rem] font-semibold",
       },
     },
     defaultVariants: {
       variant: "default",
+      size: "default",
     },
   },
 );
@@ -28,6 +39,7 @@ const badgeVariants = cva(
 function Badge({
   className,
   variant = "default",
+  size = "default",
   render,
   ...props
 }: useRender.ComponentProps<"span"> & VariantProps<typeof badgeVariants>) {
@@ -35,7 +47,7 @@ function Badge({
     defaultTagName: "span",
     props: mergeProps<"span">(
       {
-        className: cn(badgeVariants({ variant }), className),
+        className: cn(badgeVariants({ variant, size }), className),
       },
       props,
     ),
@@ -43,6 +55,7 @@ function Badge({
     state: {
       slot: "badge",
       variant,
+      size,
     },
   });
 }

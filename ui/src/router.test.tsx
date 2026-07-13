@@ -3,12 +3,16 @@ import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { expect, test } from "vite-plus/test";
 import { createAppRouter } from "./router.tsx";
 
-test("renders the Attention stub at /", async () => {
+test("renders the Attention feed at /", async () => {
+  // Provider-less render doubles as the no-Apollo guard: the feed reads its
+  // fixture seam, so mounting without an ApolloProvider must not throw.
   const router = createAppRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });
   render(<RouterProvider router={router} />);
   expect(await screen.findByRole("heading", { name: "Attention" })).toBeDefined();
+  // Real-page pin: the stub never had a view toggle.
+  expect(screen.getByRole("tab", { name: "Priority" })).toBeDefined();
   // Board has no phone tab by design: "/" must link to it so the route is
   // phone-reachable from the moment it exists.
   expect(screen.getByRole("link", { name: "View board" }).getAttribute("href")).toBe("/board");

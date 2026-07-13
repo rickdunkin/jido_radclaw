@@ -231,8 +231,9 @@ test("on /projects only the Projects tab and the All projects row are current", 
 });
 
 test("stub routes render inside the shell; /styleguide stays out of nav", async () => {
+  // "/" is no longer here: the Attention feed is a real screen, owned by
+  // attention.test.tsx (which also owns its temp-links reachability rows).
   const routes = [
-    { path: "/", heading: "Attention" },
     { path: "/approvals", heading: "Approvals" },
     { path: "/threads", heading: "Threads" },
     { path: "/board", heading: "Board" },
@@ -242,13 +243,6 @@ test("stub routes render inside the shell; /styleguide stays out of nav", async 
     renderAt(route.path);
     expect(await screen.findByRole("heading", { name: route.heading })).toBeDefined();
     expect(document.querySelector('[data-slot="sidebar"]')).not.toBeNull();
-    if (route.path === "/") {
-      // Temporary reachability list on the Attention stub (phone access to
-      // /runs and /board, /styleguide discoverability).
-      for (const name of ["View runs", "View projects", "View board", "Styleguide"]) {
-        expect(screen.getByRole("link", { name })).toBeDefined();
-      }
-    }
     cleanup();
   }
 });
