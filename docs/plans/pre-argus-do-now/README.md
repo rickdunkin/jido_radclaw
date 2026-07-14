@@ -59,7 +59,8 @@ that never got a queue doc. File:line refs inherited from the sources
 | 14 | D | Shell-gate `git worktree` mutations | emdash EM2-3 | XS–S | Analyzer effect + require-pattern |
 | 15 | D | Forge/security hardening session | crabbox CB1-1 + CB1-2 + termic TM1-2 | S–M | Provenance guard / reaper proof / cage rules |
 | 16 | E | Boundary error-code registry (served MCP) | pad PD1-2 | S | Registry + subset test + hint fields |
-| 17 | E | `/setup` as a state-derived doctor | pad PD3-1 | S | Per-step live checks + `--check` |
+| 17 | E | `/setup` as a state-derived doctor | pad PD3-1 | ~~S~~ umbrella | Split → [setup-doctor plan group](../setup-doctor/README.md) |
+| 17b | E | Runtime provider-settings authority (spun out of #17) | [setup-doctor SD5](../setup-doctor/SD5-runtime-provider-authority.md) | M–L | Atomic settings snapshot + ReqLLM consumption seam |
 | 18 | E | `mix jidoclaw.api_key` mint/list/revoke | myrlin MY1-4a (+ t3code scopes rider) | S | One mix task + scopes schema room |
 | 19 | E | `mix jidoclaw.reproject_steps` | orca OR2-4a | S | Maintenance entry point + fold reuse |
 | 20 | E | Non-interactive subprocess env floor | orca OR3-1 | XS | One constant map + merge point |
@@ -73,8 +74,9 @@ Wave B consumes #1's taxonomy (#5 reuses its classify-before-counting split;
 breaker rows, #6's canary transitions) are the first feeds for #9's attention
 read-model — so **A → B → C** is the natural spine. Waves D and E are fully
 independent filler — #13 and #15 are each a single self-contained session, and
-E's six items are the classic standalone-day/hour set; slot them anywhere,
-including interleaved with A–C. Wave F goes **after #2** (Lane A wants the
+E's items are the classic standalone-day/hour set (#17 outgrew that shape —
+see its Status; it is now the six-workstream setup-doctor group, with #17b
+spun out of it); slot them anywhere, including interleaved with A–C. Wave F goes **after #2** (Lane A wants the
 anchor/resume machinery, and its acceptance criteria are already recorded as
 MC1-1 riders). Cross-item rule carried from the queues: #4 and #16
 cross-consume — whichever lands second adds the cross-ref. Rough total: three
@@ -389,6 +391,41 @@ live checks (config present, provider key valid via `Config.check_provider/1`
 migrated), act-only-on-gaps, and a `--check` mode that prints the derivation
 and changes nothing. Done-when in
 [PD-FIRST-WAVE item 3](../../exploration/pms/pad/PD-FIRST-WAVE.md).
+
+**Status (2026-07-14): SPLIT → [the setup-doctor plan group](../setup-doctor/README.md).**
+Two plan drafts (2026-07-12 and 2026-07-14, each with multiple review rounds
+plus an integration stress-test) re-verified this item against HEAD
+`4cf076dc` and the "S" estimate collapsed: an honest doctor pulled in dotenv
+compatibility (ReqLLM/LLMDB auto-load cwd `.env`), an HTTP transport (a
+bounded Mint adapter), Ecto migration introspection under escript packaging,
+secret routing, human authorization for endpoint/credential overrides (the
+crabbox CB1-1 shape), and — the load-bearing discovery — **generation never
+consumes the configured provider endpoint or credential at all**, so the
+doctor needs a runtime provider-settings authority first (#17b below). The
+item is now an umbrella of six independently shippable workstreams: SD1
+configuration foundation → SD2 provider diagnostics + SD3 migration
+diagnostics → SD4 read-only doctor (**"#17a"** — `--check`/`/setup check`,
+the first user-facing deliverable and this entry's spirit) → SD6 repair +
+reconfigure (which completes PD-FIRST-WAVE item 3's done-when), with SD5 =
+#17b beside them. The binding operator decisions from the 2026-07-12/07-14
+interviews and every review-hardened invariant are preserved in the group's
+[CONTRACTS.md](../setup-doctor/CONTRACTS.md); per-WS docs and queue
+reconciliation land with each workstream, not in a final sweep.
+
+### 17b. Runtime provider-settings authority (M–L)
+
+Spun out of #17 (2026-07-14). Generation must actually consume the validated
+provider endpoint + credential — the binding Branch A operator decision
+(outcome, not mechanism) — but a mutable-Application-env control plane was
+rejected in architecture review: the redesign is **one atomic
+endpoint-and-credential snapshot** with a Jido/ReqLLM per-request consumption
+seam, typed refusal behavior, concurrency fencing, and operator authorization
+(`EndpointTrust` from the pre-dotenv ambient env — closing the #17-created
+slice of crabbox CB1-1; #15(a)'s general provenance guard should generalize
+from it). An architecture/security item, no longer part of "make `/setup` a
+doctor". Design + interview questions:
+[setup-doctor SD5](../setup-doctor/SD5-runtime-provider-authority.md). Needs
+setup-doctor SD1; SD6's repairs build on it.
 
 ### 18. MY1-4a — `mix jidoclaw.api_key` mint/list/revoke (S)
 
