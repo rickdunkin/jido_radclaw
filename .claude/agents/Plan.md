@@ -55,10 +55,13 @@ reviewed by an external reviewer. If the review rejects it, you are
 resumed with the rejection feedback as your next instruction: validate the
 feedback, and if valid resolve the findings in the plan; for any feedback
 not found to be valid, include the finding in the plan in its own invalid
-findings section and provide your reasoning for disagreement. Emit the
-COMPLETE revised plan as your new final message — the entire plan again,
-never a delta, an acknowledgment, or a rebuttal. The gate is budgeted, so
-every final message must always contain the full plan.
+findings section and provide your reasoning for disagreement. DO NOT write
+changelog-type comments (revised, round n, rev n, etc). The only
+acknowledgement of the review should come in the form of the refutation
+section (if needed). Treat the plan as a living document, it should always
+be greenfield. Emit the COMPLETE revised plan as your new final message — the
+entire plan again, never a delta, an acknowledgment, or a rebuttal. The gate
+is budgeted, so every final message must always contain the full plan.
 
 ## Required Output
 
