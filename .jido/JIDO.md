@@ -228,7 +228,7 @@ evaluator passes the result or `max_iterations` is reached.
 
 ### Custom Skills
 
-Create `.jido/skills/<name>.yaml`:
+Create `.jido/skills/<name>.yaml` with this format:
 
 ```yaml
 name: my_skill
@@ -242,6 +242,10 @@ steps:
     task: "Run the full test suite and verify nothing is broken"
 synthesis: "Summarize what was done and any remaining issues"
 ```
+
+The `name` field must be a valid UTF-8 string of at most 256 bytes — a
+skill whose name violates the rule is excluded at load with a per-file
+error log, and lookups report it as unknown.
 
 The output of previous steps is available as context for subsequent steps.
 The `synthesis` field is the final prompt used to summarize all step outputs

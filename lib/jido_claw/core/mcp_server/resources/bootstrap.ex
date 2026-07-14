@@ -33,6 +33,7 @@ defmodule JidoClaw.MCPServer.Resources.Bootstrap do
   alias JidoClaw.Authorization.Actor
   alias JidoClaw.Core.JsonSafe
   alias JidoClaw.MCPServer
+  alias JidoClaw.MCPServer.ErrorCodes
   alias JidoClaw.MCPServer.SurfaceVersion
   alias JidoClaw.Orchestration.AgentCase
   alias JidoClaw.Orchestration.WorkflowEvent.Projection
@@ -71,6 +72,7 @@ defmodule JidoClaw.MCPServer.Resources.Bootstrap do
       "surface_version" => SurfaceVersion.current(),
       "tool_count" => length(tool_names),
       "tool_names" => tool_names,
+      "error_contract" => error_contract(),
       "tenant" => tenant_block()
     }
 
@@ -78,6 +80,31 @@ defmodule JidoClaw.MCPServer.Resources.Bootstrap do
   end
 
   def read(_uri, _frame), do: {:error, :not_found}
+
+  # The served error contract (PD1-2): stability sentence, the closed
+  # family→codes registry, and the four wire rules a client needs —
+  # envelope location, tool-result-only scope, unregistered-code fallback,
+  # and the details.retry eligibility semantics (all three states, absence
+  # included — repo docs alone would leave remote clients unable to
+  # distinguish policy eligibility from an executed retry).
+  defp error_contract do
+    %{
+      "stability" => ErrorCodes.stability_sentence(),
+      "families" => ErrorCodes.families(),
+      "envelope_location" =>
+        "The canonical JSON envelope is content[1] — the second content item of the raw " <>
+          "error response; downstream relays may append further items, so never read it " <>
+          "as the final item.",
+      "scope" =>
+        "Tool-result errors only (isError: true tool responses). Protocol-level failures " <>
+          "(unknown tools, authorization refusals, escaped runtime failures) are plain " <>
+          "JSON-RPC errors with no envelope.",
+      "unregistered_code_fallback" =>
+        "Unregistered codes arrive re-coded as tool_error with details.unregistered_code " <>
+          "carrying the original.",
+      "retry_semantics" => ErrorCodes.retry_semantics()
+    }
+  end
 
   defp tenant_block do
     case MCPScope.with_default(%{}) do

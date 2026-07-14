@@ -11,8 +11,22 @@ defmodule JidoClaw.JidoMd.CheckTest do
       spawnable_names: ["coder"],
       skill_names: ["full_review", "sfr_review"],
       framework_names: ["Phoenix (with LiveView)", "Ecto"],
+      custom_skills_fragment: synthetic_custom_skills_fragment(),
       path_exists?: fn _ -> true end
     ]
+  end
+
+  # Matches clean_content()'s section byte-for-byte (trailing blanks are
+  # trimmed on both sides by the check).
+  defp synthetic_custom_skills_fragment do
+    """
+    ### Custom Skills
+
+    Create `.jido/skills/<name>.yaml`.
+
+    Available template names: `coder`
+    Composer-internal (not spawnable): `sketch_build`
+    """
   end
 
   defp clean_content do

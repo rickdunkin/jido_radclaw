@@ -176,6 +176,12 @@ pending): this build consumed Wave A #1's `RunFailure` taxonomy instead;
 the cross-ref lands if/when #16 builds. MC3-4 + MC-FIRST-WAVE item 3
 reconciled.
 
+**Addendum (2026-07-12)**: #16 built; the landed cross-ref is the kinship
+paragraph in `JidoClaw.MCPServer.ErrorCodes`' moduledoc (exit tiers
+classify via `RunFailure`, the registry closes the served tool-error
+vocabulary — one closed-contract family, two enforcement points; neither
+consumes the other's atoms, so no `cli/run_command.ex` edit was needed).
+
 ## Wave B — health & scheduling
 
 ### 5. OH1-1 — Cron failure provenance + circuit breaker (S)
@@ -352,8 +358,28 @@ code families in one module (~25 atoms), a subset test asserting emitted codes
 sentence in served tool descriptions, and typed hint fields (`expected`/`got`,
 `available`) generalizing the LoopGuard-directive precedent. Served MCP only —
 no global internal enum. Done-when in
-[PD-FIRST-WAVE item 2](../../exploration/pms/pad/PD-FIRST-WAVE.md). #4
-consumes this registry.
+[PD-FIRST-WAVE item 2](../../exploration/pms/pad/PD-FIRST-WAVE.md).
+~~#4 consumes this registry~~ *(stale-claim correction 2026-07-12: #4 landed
+first consuming Wave A #1's `RunFailure`; the landed #4↔#16 cross-ref is the
+kinship paragraph in `ErrorCodes`' moduledoc — one closed-contract family,
+two enforcement points, neither consuming the other's atoms).*
+
+**Status (2026-07-12): DONE** — pre-argus Wave E #16 build
+([plan](../pre-argus-wave-e-16/README.md); #17–#21 deferred, this item cut
+out alone). Deviations from this section's sketch, decided in the plan's
+review rounds: the stability sentence is SERVER-level
+(`server_instructions` + `jido://bootstrap`'s `error_contract`), not
+per-tool descriptions; the inventory was **48 literal codes at HEAD, 51
+registered** (the "~25 atoms" estimate undercounted — `:handoff_not_found`
+recovered in the final verification sweep); errors additionally became
+machine-readable on the wire (an additive `content[1]` canonical JSON
+envelope, surface v1.3, via a `Jido.MCP.Server.Runtime` patch + native
+typed-error adaptation through `Jido.Action.Error.to_map/1`); the subset
+test became boundary ENFORCEMENT (unregistered → `tool_error` +
+`details.unregistered_code`) with the AST sweep as supplemental lint; and
+`:solution_not_found` normalized at its producer (network_share → the
+registered `:not_found`) instead of the drafts' forwarded-codes side
+registry. → [docs/system/mcp-server-surface.md](../../system/mcp-server-surface.md)
 
 ### 17. PD3-1 — `/setup` as a state-derived doctor (S)
 

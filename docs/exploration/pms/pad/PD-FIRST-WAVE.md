@@ -74,7 +74,30 @@ there — and the (a) slice of
 gets its dated Status line (PARTIAL: the MCP surface; SDL/Channels goldens stay
 argus-bound).
 
-## 2. PD1-2 — Closed-at-the-boundary error-code contract (S)
+## 2. PD1-2 — Closed-at-the-boundary error-code contract (S) — ✅ DONE 2026-07-12
+
+> **Done 2026-07-12, as pre-argus Wave E #16**
+> ([plan](../../../plans/pre-argus-wave-e-16/README.md)). Every Done-when
+> clause holds, with the build teaching two scope corrections: (1) the
+> "~25 atoms" estimate was 48 literal codes at HEAD — **51 registered**
+> (8 families in `JidoClaw.MCPServer.ErrorCodes`, code → one-line-doc maps)
+> after run_skill's open runner-reason set was normalized at the tool
+> boundary into `:skill_cancelled`/`:skill_run_failed` + `:unknown_skill`;
+> (2) the "subset test" became **boundary ENFORCEMENT plus lint** — errors
+> ride an additive second content item (`content[1]`, canonical JSON,
+> served-surface v1.3 MINOR), the wire boundary re-codes unregistered
+> atoms to `tool_error` + `details.unregistered_code` (the closure proof —
+> `Error.normalize` forwards ANY atom, so the emitted set is formally
+> open), and the AST sweep with count-pinned non-envelope exclusions is
+> supplemental. Hint fields shipped as `Tools.Error.hint_available/2` +
+> `hint_expected/3` on the two named cases; the stability sentence serves
+> as `server_instructions` + `jido://bootstrap`'s `error_contract`; the
+> registry membership joined the PD1-1 golden fixture
+> (`error_codes_by_family`). Registry, boundary, tiers →
+> [docs/system/mcp-server-surface.md](../../../system/mcp-server-surface.md).
+> *Amended 2026-07-13*: tier-1 wrap identity is now WITNESSED through a
+> `Jido.Exec` fork (was shape-inferred and forgeable) — signed map
+> [PORT-PD1-2-EXEC.md](PORT-PD1-2-EXEC.md).
 
 **What**: camus C1-3's boundary posture applied to the tool surface — the
 interior stays open (any atom), the served contract closes. (a) Enumerate the
@@ -126,3 +149,10 @@ registry is the same boundary-vocabulary conversation as camus C1-3's
 item 2's registry rather than re-sniffing envelopes — whichever lands second
 adds the cross-ref. Items 1+2 together are the inventory's "fix our own rot +
 close the contract" bottom line; item 3 is a standalone day.
+
+**Cross-ref resolution (2026-07-12)**: exit-code tiering landed FIRST (Wave A
+#4, consuming `RunFailure`), so item 2 — landing second — added the cross-ref
+as the kinship paragraph in `ErrorCodes`' moduledoc: the exit tiers classify
+run failures via `RunFailure`, this registry closes the served tool-error
+vocabulary — one closed-contract family, two enforcement points, neither
+consuming the other's atoms.

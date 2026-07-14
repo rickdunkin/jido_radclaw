@@ -7,8 +7,8 @@ sources:
   - lib/jido_claw/tools/action.ex
   - lib/jido_claw/tools/run_command.ex
   - lib/jido_claw/shell/session_manager.ex
-verified: 2026-07-09
-verified_sha: "b2cae5cd"
+verified: 2026-07-12
+verified_sha: "57f61037"
 ---
 
 # Loop Guard (doom-loop detection)
@@ -46,13 +46,35 @@ on every node, so the worst-case budget scales with node count):
 
 1. **Identical-call runs**: a trailing run of ≥4 identical `{tool, sha256(args)}` calls
    in the last 8 halts immediately, success-agnostic — the 4th call never executes.
-2. **Failure signatures**: any failure signature (`{tool, first-100-chars}`; typed
+2. **Failure signatures**: any failure signature (`{tool, identity}`; typed
    classification — `{:error, _}` tuples, run_command's `{:ok, %{exit_code: n}}` with
    `n != 0`, or the MCP proxies' re-surfaced `{:ok, %{"isError" => true}}` domain
    failures, never error-string sniffing) reaching 3 in the last 20 error results
    triggers a staged response: a recovery directive appended to the field the LLM reads
    (`message`, `output` for the nonzero-exit OK shape, or an appended `content` text
    item for the MCP isError shape) twice, then a halt.
+
+   Classification produces an explicit `{identity, display}` pair (PD1-2, plan §2):
+   `identity` — what the Store compares and counts — is
+   `CanonicalHash.sha256_term/1` over `{code, message_prefix, details_fingerprint}`
+   (the CODE an explicit component; `message_prefix` the first-100-chars
+   `signature_text/1`; `details_fingerprint` the budgeted
+   `JsonSafe.fingerprint_projection/2` over the envelope's details — field-aware:
+   `skill`/`reason_head`/`field` values stay exact and bounded to 256 bytes, other
+   binaries collapse to a constant marker, numbers and runtime identities
+   (pids/refs/ports/functions/bitstrings) to per-class constant markers, maps to
+   deterministically sorted projected-pair lists that keep every entry; a budget trip
+   yields one constant sentinel component). `display` is the bounded human text
+   directives and halt messages render. The identity is INTERNAL to the signature
+   state — never emitted in messages, halt directives, telemetry text, or logs — and
+   only ADDS distinction beside the message component: no previously-distinct
+   signatures merge, identical failures keep identical signatures (volatile numerics
+   and runtime identities in details contribute no per-attempt drift), and secrets of
+   any length coalesce into the constant marker with no digest of them emitted
+   anywhere. One accepted split: a transport-error envelope and a same-text domain
+   `isError` result — merged by HEAD's text-only signatures — are now distinct
+   failure classes (different code/details components); the isError interleave still
+   never CLEARS the transport window.
 3. **Call budget**: 100 executed calls per key cap the budget — the 101st is blocked,
    with a one-time log+Trace warn at 80% (never injected into results).
 

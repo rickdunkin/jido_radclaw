@@ -123,8 +123,20 @@ defmodule JidoClaw.Tools.LoopGuardIntegrationTest do
     @doc "The exact halt envelope the facade builds, via the public pure helpers."
     @spec doom_envelope() :: map()
     def doom_envelope do
+      {:failure, sig} =
+        LoopGuard.classify_result(
+          {:error,
+           %{
+             code: :execution_error,
+             message: "old_string not found in lib/foo.ex",
+             details: %{}
+           }},
+          %{}
+        )
+
       state = %KeyState{
-        failure_sigs: List.duplicate({"edit_file", "old_string not found in lib/foo.ex"}, 3)
+        failure_sigs: List.duplicate({"edit_file", sig.identity}, 3),
+        sig_displays: %{{"edit_file", sig.identity} => sig.display}
       }
 
       %{
@@ -412,17 +424,21 @@ defmodule JidoClaw.Tools.LoopGuardIntegrationTest do
                McpErrorEcho.run(%{result: failing_error(text), index: i}, context)
     end
 
-    # The 3rd same-text failure arrives via the MCP domain contract. Pre-fix
-    # it classified :success — clearing the two signatures above and
-    # recording nothing; it must instead be the 3rd occurrence and nudge.
-    assert {:ok, %{"isError" => true, "content" => content}} =
+    # An interleaved same-text DOMAIN failure. Pre-fix it classified
+    # :success — clearing the two signatures above; it must instead record
+    # as a failure. Under the identity contract it is a DISTINCT signature
+    # (different code/details components), so it neither clears nor counts
+    # toward the transport streak: no directive on its first occurrence.
+    assert {:ok, %{"isError" => true, "content" => [%{"text" => ^text}]}} =
              McpErrorEcho.run(%{result: mcp_result(true, text), index: 3}, context)
 
-    assert match?(
-             [%{"text" => ^text}, %{"type" => "text", "text" => "[DOOM LOOP RECOVERY:" <> _}],
-             content
-           ),
-           "3rd same-text failure must nudge — an isError result must not clear the window"
+    # The 3rd transport failure is the 3rd occurrence of the TRANSPORT
+    # signature — the window survived the isError interleave.
+    assert {:error, %{message: message}} =
+             McpErrorEcho.run(%{result: failing_error(text), index: 4}, context)
+
+    assert message =~ "[DOOM LOOP RECOVERY:",
+           "3rd transport failure must nudge — the isError interleave must not clear the window"
   end
 
   test "a genuine isError => false success still clears the tool's signatures",

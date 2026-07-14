@@ -311,4 +311,52 @@ defmodule JidoClawTest.ErrorToolsWireFormatTest do
       assert wire.message == "bad thing"
     end
   end
+
+  describe "hint_available/2 (PD1-2 typed hint details)" do
+    test "canonicalizes before capping: stringify, dedupe, sort ascending" do
+      details = Wire.hint_available(["zeta", :alpha, "zeta", "mid"], %{retry: false})
+
+      assert details.available == ["alpha", "mid", "zeta"]
+      assert details.retry == false
+      refute Map.has_key?(details, :available_truncated)
+    end
+
+    test "more than 25 names caps the list with available_truncated from the PRE-CAP count" do
+      # Unsorted input with duplicates: the cap must apply AFTER canonical
+      # ordering, so the kept 25 are the 25 smallest names.
+      names = Enum.map(60..1//-1, fn i -> "skill_#{String.pad_leading("#{i}", 3, "0")}" end)
+      details = Wire.hint_available(names ++ names)
+
+      assert Enum.count(details.available) == 25
+      assert details.available == Enum.sort(details.available)
+      assert hd(details.available) == "skill_001"
+      assert details.available_truncated == true
+    end
+
+    test "exactly 25 distinct names do not flip the flag" do
+      names = Enum.map(1..25, fn i -> "s#{String.pad_leading("#{i}", 2, "0")}" end)
+      details = Wire.hint_available(names)
+
+      assert Enum.count(details.available) == 25
+      refute Map.has_key?(details, :available_truncated)
+    end
+  end
+
+  describe "hint_expected/3 (PD1-2 typed hint details)" do
+    test "puts bounded expected/got strings; non-binaries render via inspect" do
+      details = Wire.hint_expected("a relative glob", {:got, :atom}, %{retry: false})
+
+      assert details.expected == "a relative glob"
+      assert details.got == "{:got, :atom}"
+      assert details.retry == false
+    end
+
+    test "oversized values are 2KB-truncated" do
+      details = Wire.hint_expected(String.duplicate("e", 5_000), "g")
+
+      assert String.ends_with?(details.expected, "... (truncated)")
+      assert byte_size(details.expected) < 3_000
+      assert details.got == "g"
+    end
+  end
 end

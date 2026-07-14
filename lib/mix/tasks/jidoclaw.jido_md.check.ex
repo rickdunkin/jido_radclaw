@@ -65,7 +65,10 @@ defmodule Mix.Tasks.Jidoclaw.JidoMd.Check do
       # Derived from the REAL mix.exs by the same detection the generator
       # uses — the committed Frameworks line can no longer drift from what
       # the project actually depends on.
-      framework_names: JidoClaw.JidoMd.framework_names(File.cwd!())
+      framework_names: JidoClaw.JidoMd.framework_names(File.cwd!()),
+      # Byte-compared against the committed section — a generator prose
+      # change fails here until the committed file regenerates.
+      custom_skills_fragment: JidoClaw.JidoMd.custom_skills_section()
     ]
   end
 end

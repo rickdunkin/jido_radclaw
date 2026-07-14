@@ -1,4 +1,8 @@
 defmodule JidoClaw.Tools.ListDirectory do
+  # The {code, message, details} map is the LLM-facing wire-error contract
+  # (shared with JidoClaw.Tools.Error) — an explicit API surface, not
+  # incidental duplication.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   List files and directories via the VFS resolver.
 
@@ -32,7 +36,9 @@ defmodule JidoClaw.Tools.ListDirectory do
       max_results: [type: :integer, default: 200, doc: "Max entries to return"]
     ]
 
+  alias JidoClaw.Tools.Error
   alias JidoClaw.Tools.MCPScope
+  alias JidoClaw.Tools.OutputLimit
   alias JidoClaw.VFS.Resolver
   alias JidoClaw.VFS.Sandbox
 
@@ -156,10 +162,49 @@ defmodule JidoClaw.Tools.ListDirectory do
         "#{type}  #{rel}"
       end)
     else
+      # Typed glob envelopes (PD1-2): deterministic validation — a retry
+      # re-fails identically, so the envelopes pin retry: false.
+      {:error, code} when code in [:absolute_glob_not_allowed, :glob_outside_project] ->
+        {:error, glob_envelope(code, glob)}
+
       {:error, reason} ->
         {:error, "Cannot list #{path}: #{inspect(reason)}"}
     end
   end
+
+  # 256-byte identifier bound for the request-input glob in messages
+  # (UTF-8-safe — a split multibyte character must not plant invalid text
+  # ahead of OutputRedaction).
+  @glob_message_bytes 256
+
+  defp glob_envelope(:absolute_glob_not_allowed, glob) do
+    %{
+      code: :absolute_glob_not_allowed,
+      message:
+        "Glob '#{bound_glob(glob)}' is absolute; glob patterns must be relative to the listed path.",
+      details: Error.hint_expected("a relative glob like **/*.ex", glob, %{retry: false})
+    }
+  end
+
+  defp glob_envelope(:glob_outside_project, glob) do
+    %{
+      code: :glob_outside_project,
+      message:
+        "Glob '#{bound_glob(glob)}' escapes the listed directory; '~' and '..' segments are not allowed.",
+      details:
+        Error.hint_expected("a glob without '~' or '..' segments, like **/*.ex", glob, %{
+          retry: false
+        })
+    }
+  end
+
+  defp bound_glob(glob) when is_binary(glob) and byte_size(glob) > @glob_message_bytes do
+    glob
+    |> binary_part(0, @glob_message_bytes)
+    |> OutputLimit.valid_utf8_prefix()
+  end
+
+  defp bound_glob(glob) when is_binary(glob), do: glob
 
   defp format_local_entries(files, local_path) do
     files

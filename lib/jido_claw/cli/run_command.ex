@@ -234,16 +234,8 @@ defmodule JidoClaw.CLI.RunCommand do
     end
   end
 
-  # `:project_dir` must be set BEFORE the app starts — supervision children
-  # read it at boot, before the DB is queryable. `:serve_mode` stays unset so
-  # the external MCP Consumer + `ensure_attached` keep working.
   defp boot(dir, opts) do
-    config = Config.load(dir)
-    model = Config.model(config)
-    Application.put_env(:jido_ai, :model_aliases, %{fast: model, capable: model})
-    Application.put_env(:jido_claw, :mode, :cli)
-    Application.put_env(:jido_claw, :skip_discord, true)
-    Application.put_env(:jido_claw, :project_dir, dir)
+    prime_boot_env(dir, Config.model(Config.load(dir)))
 
     boot_fn = Keyword.get(opts, :boot, &default_boot/0)
 
@@ -257,6 +249,46 @@ defmodule JidoClaw.CLI.RunCommand do
   rescue
     # reach:disable-next-line bare_rescue
     e -> {:usage, Exception.message(e)}
+  end
+
+  @doc """
+  Load the `:jido_claw`/`:jido_ai` app specs, THEN apply the one-shot
+  runner's pre-boot env: the model-alias pair, `:cli` mode (never Phoenix),
+  no Discord, and `:project_dir` — which must be set BEFORE the app starts,
+  because supervision children read it at boot, before the DB is queryable
+  (`:serve_mode` stays unset so the external MCP Consumer +
+  `ensure_attached` keep working).
+
+  Load-first is the point: under the escript's `app: nil` NOTHING is loaded
+  when this runs, and Mix's generated escript main has already applied the
+  embedded config with `persistent: true` (`config.exs` sets `mode: :both`
+  plus the model-alias catalog) — so the boot's own `Application.load`
+  inside `ensure_all_started/1` would re-apply those spec/persistent entries
+  OVER any plain pre-load puts. Loading here makes that later load a no-op.
+  The puts stay deliberately NON-persistent (unlike `CLI.Main`'s pre-boot
+  pattern) because this function also runs inside the test VM on every
+  run-command test row, where a persistent shadow would outlive the tests'
+  non-persistent save/restore. On the `mix jidoclaw run` path both loads are
+  already-loaded no-ops and behavior is unchanged.
+  """
+  @spec prime_boot_env(Path.t(), String.t() | nil) :: :ok
+  def prime_boot_env(dir, model) do
+    load_app_spec!(:jido_claw)
+    load_app_spec!(:jido_ai)
+
+    Application.put_env(:jido_ai, :model_aliases, %{fast: model, capable: model})
+    Application.put_env(:jido_claw, :mode, :cli)
+    Application.put_env(:jido_claw, :skip_discord, true)
+    Application.put_env(:jido_claw, :project_dir, dir)
+    :ok
+  end
+
+  defp load_app_spec!(app) do
+    case Application.load(app) do
+      :ok -> :ok
+      {:error, {:already_loaded, ^app}} -> :ok
+      {:error, reason} -> raise "failed to load the #{app} app spec: #{inspect(reason)}"
+    end
   end
 
   defp default_boot do

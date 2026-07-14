@@ -259,6 +259,7 @@ GUIDELINES:
 
 - Ignore trivial style unless it obscures meaning or violates documented standards.
 - Use one comment per distinct issue (or a multi-line range if necessary).
+- If there is an architectural design flaw, call it out in the comment and suggest a better way to do it.
 - Use ```suggestion blocks ONLY for concrete replacement code (minimal lines; no commentary inside the block).
 - In every ```suggestion block, preserve the exact leading whitespace of the replaced lines (spaces vs tabs, number of spaces).
 - Do NOT introduce or remove outer indentation levels unless that is the actual fix.
@@ -310,7 +311,7 @@ EOF
 # backticks, no apostrophes ($guidelines/$output_contract/$plan/$prior expand
 # as data and are never re-parsed).
 IFS= read -r -d '' prompt <<EOF || true
-You are gating a finalized implementation plan for the repository at your working directory — the plan is about to be presented to the user for approval. You have read-only access. Please review this plan for anything that sticks out as incorrect, a gap, a potential regression, or just something that could be done better or maybe more idiomatically elixir/ash/jido if backend code, or react/tailwind/shadcn/apollo if frontend code.
+You are gating a finalized implementation plan for the repository at your working directory — the plan is about to be presented to the user for approval. You have read-only access. The plan may be targeting backed, frontend, or potentially both. Focus your review efforts only on the relevant pieces of the plan. Look for anything that sticks out as incorrect, a gap, a potential regression, or just something that could be done better or maybe more idiomatically elixir/ash/jido if backend code, or react/tailwind/shadcn/apollo if frontend code.
 
 $guidelines
 $revision_note
@@ -382,7 +383,7 @@ if [[ "$ok" == "false" ]]; then
   echo $((rounds + 1)) >"$counter"
   printf '%s' "$reason" >"$prior_file"
   log "deny round $((rounds + 1))/$MAX_ROUNDS"
-  msg="Codex plan review (round $((rounds + 1))/$MAX_ROUNDS) rejected this plan:
+  msg="Plan review (round $((rounds + 1))/$MAX_ROUNDS) rejected this plan:
 
 $reason
 

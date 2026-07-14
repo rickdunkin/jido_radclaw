@@ -150,6 +150,30 @@ defmodule JidoClaw.Tools.ListDirectoryTest do
     end
   end
 
+  describe "run/2 typed glob envelopes (PD1-2)" do
+    test "an absolute glob yields the typed envelope with hint + retry: false", %{dir: dir} do
+      assert {:error, envelope} =
+               ListDirectory.run(%{path: dir, pattern: "/etc/**"}, context(dir))
+
+      assert envelope.code == :absolute_glob_not_allowed
+      assert envelope.message =~ "/etc/**"
+      assert envelope.details.retry == false
+      assert envelope.details.expected =~ "relative glob"
+      assert envelope.details.got == "/etc/**"
+    end
+
+    test "a '~' or '..' glob yields :glob_outside_project with hint + retry: false", %{dir: dir} do
+      for glob <- ["~/secrets/**", "../outside/*.ex"] do
+        assert {:error, envelope} =
+                 ListDirectory.run(%{path: dir, pattern: glob}, context(dir))
+
+        assert envelope.code == :glob_outside_project
+        assert envelope.details.retry == false
+        assert envelope.details.got == glob
+      end
+    end
+  end
+
   describe "run/2 with workspace_id (VFS path)" do
     test "lists entries from a mounted VFS filesystem" do
       workspace_id = "test-listdir-vfs-#{System.unique_integer([:positive])}"

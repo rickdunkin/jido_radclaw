@@ -46,9 +46,10 @@ defmodule JidoClaw.Tools.Lua.Runner do
   `:lua_timeout` is deliberately non-retryable (a deviation from
   LuaEval's retryable timeout): the same script under the same caps
   re-times-out. `:lua_result_not_encodable` extends the planned table:
-  a Lua string is raw bytes, and a non-UTF-8 return cannot be JSON-
-  measured or serialized downstream — surfaced honestly instead of
-  crashing the measurement.
+  a Lua string is raw bytes, and a non-UTF-8 return is REFUSED by an
+  explicit validity scan over the raw results — never silently scrubbed
+  (`JsonSafe.encode/1` is total and would replacement-char the bytes,
+  which would mutate script output instead of surfacing the problem).
   """
 
   alias JidoClaw.Core.JsonSafe
@@ -112,33 +113,36 @@ defmodule JidoClaw.Tools.Lua.Runner do
   end
 
   defp build_result({:ok, results}, false, calls, policy) do
-    safe_results = JsonSafe.encode(results)
-    result = %{"results" => safe_results, "call_count" => length(calls), "calls" => calls}
+    # The refusal contract is the runner's own: non-UTF-8 binaries are
+    # REFUSED, never scrubbed — JsonSafe.encode/1 is total (it would
+    # replacement-char the bytes), so the explicit validity scan here is
+    # what keeps :lua_result_not_encodable honest.
+    if utf8_clean?(results) do
+      safe_results = JsonSafe.encode(results)
+      result = %{"results" => safe_results, "call_count" => length(calls), "calls" => calls}
 
-    case measure(result) do
-      {:ok, bytes} when bytes > policy.max_result_bytes ->
-        envelope(
-          :lua_result_too_large,
-          "lua_query result is #{bytes} bytes, over the #{policy.max_result_bytes}-byte " <>
-            "cap; filter/aggregate in-script and return only what you need — page with " <>
-            "after_seq (jido.events) or offset (jido.output). Do not retry unchanged.",
-          %{
-            result_bytes: bytes,
-            max_result_bytes: policy.max_result_bytes,
-            call_count: length(calls)
-          }
-        )
+      case measure(result) do
+        {:ok, bytes} when bytes > policy.max_result_bytes ->
+          envelope(
+            :lua_result_too_large,
+            "lua_query result is #{bytes} bytes, over the #{policy.max_result_bytes}-byte " <>
+              "cap; filter/aggregate in-script and return only what you need — page with " <>
+              "after_seq (jido.events) or offset (jido.output). Do not retry unchanged.",
+            %{
+              result_bytes: bytes,
+              max_result_bytes: policy.max_result_bytes,
+              call_count: length(calls)
+            }
+          )
 
-      {:ok, _bytes} ->
-        {:ok, result}
+        {:ok, _bytes} ->
+          {:ok, result}
 
-      :unencodable ->
-        envelope(
-          :lua_result_not_encodable,
-          "lua_query result contains non-UTF-8 binary data; Lua strings returned to the " <>
-            "host must be valid UTF-8 text. Return printable text only. Do not retry unchanged.",
-          %{call_count: length(calls)}
-        )
+        :unencodable ->
+          not_encodable_envelope(calls)
+      end
+    else
+      not_encodable_envelope(calls)
     end
   end
 
@@ -186,6 +190,30 @@ defmodule JidoClaw.Tools.Lua.Runner do
       %{exit: inspect(exit_reason), call_count: length(calls)}
     )
   end
+
+  defp not_encodable_envelope(calls) do
+    envelope(
+      :lua_result_not_encodable,
+      "lua_query result contains non-UTF-8 binary data; Lua strings returned to the " <>
+        "host must be valid UTF-8 text. Return printable text only. Do not retry unchanged.",
+      %{call_count: length(calls)}
+    )
+  end
+
+  # Lua-sourced values are nil/boolean/number/binary plus list/map shapes
+  # from Lua tables; every binary leaf (keys included) must be valid UTF-8.
+  defp utf8_clean?(value) when is_binary(value), do: String.valid?(value)
+  defp utf8_clean?(list) when is_list(list), do: Enum.all?(list, &utf8_clean?/1)
+
+  defp utf8_clean?(map) when is_map(map) do
+    Enum.all?(map, fn {k, v} -> utf8_clean?(k) and utf8_clean?(v) end)
+  end
+
+  defp utf8_clean?(tuple) when is_tuple(tuple) do
+    utf8_clean?(Tuple.to_list(tuple))
+  end
+
+  defp utf8_clean?(_other), do: true
 
   defp measure(result) do
     {:ok, byte_size(Jason.encode!(result))}

@@ -369,6 +369,154 @@ defmodule JidoClaw.SkillsTest do
   end
 
   # ---------------------------------------------------------------------------
+  # Skill-name byte bound (256) — parse/load boundary, both load and reload
+  # ---------------------------------------------------------------------------
+
+  describe "skill-name byte bound" do
+    import ExUnit.CaptureLog
+
+    test "an overlong-name skill is excluded at load AND reload with a loud per-file log",
+         %{dir: dir} do
+      overlong = String.duplicate("a", 257)
+      write_skill!(dir, "short.yaml", "short_skill", "t")
+      write_skill!(dir, "overlong.yaml", overlong, "t")
+
+      load_log =
+        capture_log(fn ->
+          start_skills!(dir)
+          assert Skills.list() == ["short_skill"]
+        end)
+
+      assert load_log =~ "overlong.yaml"
+      assert load_log =~ "256-byte bound"
+
+      # Downstream lookups honestly miss (run_skill maps this to
+      # :unknown_skill); replay's fresh-disk lookup maps to :not_found.
+      assert {:error, message} = Skills.get(overlong)
+      assert message =~ "not found"
+
+      reload_log =
+        capture_log(fn ->
+          assert Skills.load_skill(overlong, dir) == {:error, :not_found}
+          assert :ok = Skills.reload()
+          assert Skills.list() == ["short_skill"]
+        end)
+
+      assert reload_log =~ "overlong.yaml"
+      assert reload_log =~ "256-byte bound"
+    end
+
+    test "a 256-byte name is allowed (bound is inclusive)", %{dir: dir} do
+      exact = String.duplicate("b", 256)
+      write_skill!(dir, "exact.yaml", exact, "t")
+
+      start_skills!(dir)
+      assert Skills.list() == [exact]
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Skill-name type invariant — every non-binary (and invalid-UTF-8) name is
+  # rejected at the same parse/load boundary, load AND reload
+  # ---------------------------------------------------------------------------
+
+  describe "skill-name type invariant" do
+    import ExUnit.CaptureLog
+
+    # write_skill!/4 interpolates the name into quoted YAML, so these rows
+    # write raw YAML directly to exercise YamlElixir's scalar surface.
+    defp write_raw_skill!(dir, filename, yaml) do
+      skills_dir = Path.join([dir, ".jido", "skills"])
+      File.mkdir_p!(skills_dir)
+      File.write!(Path.join(skills_dir, filename), yaml)
+    end
+
+    defp minimal_body do
+      """
+      description: test skill
+      steps:
+        - name: only
+          template: t1
+          task: "t"
+      synthesis: done
+      """
+    end
+
+    test "non-string names (integer/map/explicit-null) are excluded at load AND reload",
+         %{dir: dir} do
+      write_skill!(dir, "valid.yaml", "valid_skill", "t")
+      write_raw_skill!(dir, "int_name.yaml", "name: 123\n" <> minimal_body())
+      write_raw_skill!(dir, "map_name.yaml", "name: {a: 1}\n" <> minimal_body())
+      write_raw_skill!(dir, "null_name.yaml", "name:\n" <> minimal_body())
+
+      load_log =
+        capture_log(fn ->
+          start_skills!(dir)
+          assert Skills.list() == ["valid_skill"]
+        end)
+
+      for {file, class} <- [
+            {"int_name.yaml", "integer"},
+            {"map_name.yaml", "map"},
+            {"null_name.yaml", "null"}
+          ] do
+        assert load_log =~ file
+        assert load_log =~ "must be a string"
+        assert load_log =~ "got: #{class}"
+      end
+
+      # Downstream lookups honestly miss, cache AND fresh-disk path.
+      assert {:error, message} = Skills.get("123")
+      assert message =~ "not found"
+      assert Skills.load_skill("123", dir) == {:error, :not_found}
+
+      reload_log =
+        capture_log(fn ->
+          assert :ok = Skills.reload()
+          assert Skills.list() == ["valid_skill"]
+        end)
+
+      assert reload_log =~ "int_name.yaml"
+      assert reload_log =~ "must be a string"
+    end
+
+    test "an invalid-UTF-8 !!binary name is excluded at load AND reload with the constant log",
+         %{dir: dir} do
+      write_skill!(dir, "valid.yaml", "valid_skill", "t")
+      # YamlElixir's !!binary tag delivers raw bytes: /w== → <<255>> — a
+      # BINARY that passes the size check but carries invalid UTF-8.
+      write_raw_skill!(dir, "raw_bytes.yaml", "name: !!binary /w==\n" <> minimal_body())
+
+      load_log =
+        capture_log(fn ->
+          start_skills!(dir)
+          assert Skills.list() == ["valid_skill"]
+        end)
+
+      assert load_log =~ "raw_bytes.yaml"
+      assert load_log =~ "must be valid UTF-8"
+
+      reload_log =
+        capture_log(fn ->
+          assert :ok = Skills.reload()
+          assert Skills.list() == ["valid_skill"]
+        end)
+
+      assert reload_log =~ "raw_bytes.yaml"
+      assert reload_log =~ "must be valid UTF-8"
+    end
+
+    test "a valid QUOTED numeric name still loads — the rejection is about type, not digits",
+         %{dir: dir} do
+      write_skill!(dir, "quoted.yaml", ~s("123"), "t")
+
+      start_skills!(dir)
+      assert Skills.list() == ["123"]
+      assert {:ok, %Skills{name: "123"}} = Skills.get("123")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
   # list/0 (GenServer-backed; list/1 compat wrapper delegates to it)
   # ---------------------------------------------------------------------------
 

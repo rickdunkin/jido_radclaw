@@ -49,6 +49,7 @@ defmodule JidoClaw.JidoMdTest do
       spawnable_names: expected_spawnable_names(),
       skill_names: JidoClaw.Skills.default_skill_names(),
       framework_names: JidoMd.framework_names(tmp_dir),
+      custom_skills_fragment: JidoMd.custom_skills_section(),
       path_exists?: &File.exists?(Path.join(tmp_dir, &1))
     ]
   end
@@ -90,6 +91,32 @@ defmodule JidoClaw.JidoMdTest do
       content = generate_in(tmp_dir, @phoenix_no_liveview_mix_exs)
 
       assert Check.problems(content, drift_guard_opts(tmp_dir)) == []
+    end
+
+    @tag :tmp_dir
+    test "operator edits to the editable Architecture section still pass", %{tmp_dir: tmp_dir} do
+      content =
+        tmp_dir
+        |> generate_in()
+        |> String.replace(
+          "## Architecture",
+          "## Architecture\n\nOperator-authored subsystem notes live here."
+        )
+
+      assert Check.problems(content, drift_guard_opts(tmp_dir)) == []
+    end
+
+    @tag :tmp_dir
+    test "prose drift inside the Custom Skills section is flagged", %{tmp_dir: tmp_dir} do
+      content =
+        tmp_dir
+        |> generate_in()
+        |> String.replace("at most 256 bytes", "at most 999 bytes")
+
+      assert Check.problems(content, drift_guard_opts(tmp_dir)) == [
+               "Custom Skills section drifted from the generator " <>
+                 "(splice in JidoClaw.JidoMd.custom_skills_section/0)"
+             ]
     end
   end
 

@@ -59,6 +59,36 @@ defmodule JidoClaw.Security.VaultConfigTest do
     end
   end
 
+  test "raises at startup on malformed (non-base64) CLOAK_KEY with the loader's message" do
+    System.put_env("CLOAK_KEY", "not-base64!!")
+
+    assert_raise RuntimeError, ~r/Invalid CLOAK_KEY.*invalid_base64/s, fn ->
+      VaultConfig.ensure_configured!()
+    end
+  end
+
+  test "each valid key length configures the EXACT decoded bytes — never the base64 string" do
+    # The key-collision hazard this pins (why the runtime.exs cipher block
+    # was DELETED rather than raw-passed): configured_cipher?/1 accepts ANY
+    # 16/24/32-byte binary as an already-decoded key, and base64 encodings
+    # of 16/24-byte AES keys are themselves 24/32 bytes — a raw base64
+    # string in the cipher tuple would silently select a DIFFERENT key and
+    # make existing ciphertext unreadable.
+    for len <- [16, 24, 32] do
+      Application.delete_env(:jido_claw, Vault)
+      raw_key = :crypto.strong_rand_bytes(len)
+      System.put_env("CLOAK_KEY", Base.encode64(raw_key))
+
+      assert :ok = VaultConfig.ensure_configured!()
+
+      assert {Cloak.Ciphers.AES.GCM, cipher_opts} =
+               Application.get_env(:jido_claw, Vault)[:ciphers][:default]
+
+      assert Keyword.fetch!(cipher_opts, :key) == raw_key,
+             "#{len}-byte key: the configured cipher key must be the DECODED bytes"
+    end
+  end
+
   defp restore_app_env(nil), do: Application.delete_env(:jido_claw, Vault)
   defp restore_app_env(config), do: Application.put_env(:jido_claw, Vault, config)
 

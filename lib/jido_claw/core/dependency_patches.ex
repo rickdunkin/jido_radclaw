@@ -3,6 +3,12 @@ defmodule JidoClaw.Core.DependencyPatches do
 
   @patched_modules [
     {Anubis.Server.Handlers.Tools, :anubis_mcp},
+    # Compile-time GENERATED fork (lib/jido_claw/core/jido_exec_patch.ex) —
+    # the BEAM is emitted/verified by Mix.Tasks.Compile.JidoclawReleasePatches
+    # on every compile, so the app-ebin candidate below always exists in
+    # dev/test and relocates into the dep ebin for releases.
+    {Jido.Exec, :jido_action},
+    {Jido.MCP.Server.Runtime, :jido_mcp},
     {Jido.MCP.Transport.STDIO, :jido_mcp},
     {Jido.Shell.Command.Registry, :jido_shell},
     {Jido.Shell.ShellSession, :jido_shell},
@@ -77,10 +83,32 @@ defmodule JidoClaw.Core.DependencyPatches do
         File.exists?(path <> ".beam")
       end)
 
-    unless beam_base_path do
-      raise "patched BEAM for #{inspect(module)} not found in #{inspect(candidate_base_paths)}"
-    end
+    if beam_base_path do
+      force_load!(beam_base_path, module)
+    else
+      # No on-disk BEAM at either candidate: the escript/archive context —
+      # `File.exists?/1` cannot see INTO the escript archive, where both
+      # candidate paths point. A prod escript is safe to plain-load: the
+      # release-patches compiler stage relocated every patched BEAM over
+      # its dep original and removed the app-side copy, so the archive
+      # carries exactly ONE (patched) copy per module and the
+      # archive-aware code server loads it. Still loud when the module is
+      # genuinely absent. (A dev-built escript — no relocation, duplicate
+      # beams racing in the archive — is out of contract; distribute
+      # MIX_ENV=prod builds.)
+      case Code.ensure_loaded(module) do
+        {:module, ^module} ->
+          :ok
 
+        {:error, reason} ->
+          raise "patched BEAM for #{inspect(module)} not found on disk in " <>
+                  "#{inspect(candidate_base_paths)} and not loadable from the code " <>
+                  "path (#{inspect(reason)})"
+      end
+    end
+  end
+
+  defp force_load!(beam_base_path, module) do
     _ = :code.purge(module)
     _ = :code.delete(module)
 

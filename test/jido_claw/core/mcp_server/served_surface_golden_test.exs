@@ -1,20 +1,26 @@
 defmodule JidoClaw.MCPServer.ServedSurfaceGoldenTest do
   @moduledoc """
   PD1-1 golden: the served MCP surface (tool names, static resource URIs,
-  template URIs, surface version) is pinned to a committed fixture. Any drift
+  template URIs, surface version, and — PD1-2 — the error-code registry's
+  family→codes membership) is pinned to a committed fixture. Any drift
   fails here until the change is made deliberately — apply the
   `JidoClaw.MCPServer.SurfaceVersion` bump rules and regenerate the fixture
   IN THE SAME DIFF (the failure message prints the ready-to-commit JSON).
+  For error codes: additions = MINOR; removals, renames, refamilies = MAJOR.
 
   Set-compares names per enumeration surface (the house drift-guard rule —
-  never counts, which pass real drift). The separate "publishes 26 tools"
-  count test in `mcp_server_test.exs` is not this golden's concern.
+  never counts, which pass real drift). `error_codes_by_family` pins
+  MEMBERSHIP only (family → sorted code strings); registry doc wording is
+  deliberately excluded — doc edits are registry-internal, not surface
+  drift. The separate "publishes 26 tools" count test in
+  `mcp_server_test.exs` is not this golden's concern.
   """
 
   # async: false — the same module-loading caveat as mcp_server_test.exs.
   use ExUnit.Case, async: false
 
   alias JidoClaw.MCPServer
+  alias JidoClaw.MCPServer.ErrorCodes
   alias JidoClaw.MCPServer.SurfaceVersion
 
   @fixture_path Path.expand("../../../fixtures/mcp_surface/served_surface.json", __DIR__)
@@ -39,6 +45,11 @@ defmodule JidoClaw.MCPServer.ServedSurfaceGoldenTest do
         assert golden["surface_version"] == live["surface_version"],
                "surface_version drifted from the committed golden.\n" <> regen_help(live)
 
+        assert golden["error_codes_by_family"] == live["error_codes_by_family"],
+               "error_codes_by_family drifted from the committed golden " <>
+                 "(additions = MINOR; removals/renames/refamilies = MAJOR).\n" <>
+                 regen_help(live)
+
       {:error, reason} ->
         flunk(
           "golden fixture unreadable (#{inspect(reason)}): #{@fixture_path}\n" <>
@@ -53,6 +64,9 @@ defmodule JidoClaw.MCPServer.ServedSurfaceGoldenTest do
   #   * resource_templates — anubis `component` templates; NEVER read from
   #     `__publish__().resources`, where templates never appear (the
   #     workflow_stage_test false-green trap).
+  #   * error_codes_by_family — `ErrorCodes.families/0` with each family's
+  #     code KEYS stringified + sorted, docs excluded (membership is the
+  #     wire contract).
   defp live_surface do
     static_uris =
       MCPServer.__publish__().resources
@@ -65,11 +79,23 @@ defmodule JidoClaw.MCPServer.ServedSurfaceGoldenTest do
       |> Enum.map(& &1.uri_template)
       |> Enum.sort()
 
+    error_codes_by_family =
+      Map.new(ErrorCodes.families(), fn {family, codes} ->
+        stringified =
+          codes
+          |> Map.keys()
+          |> Enum.map(&Atom.to_string/1)
+          |> Enum.sort()
+
+        {Atom.to_string(family), stringified}
+      end)
+
     %{
       "surface_version" => SurfaceVersion.current(),
       "tool_names" => MCPServer.served_tool_names(),
       "static_resource_uris" => static_uris,
-      "resource_templates" => template_uris
+      "resource_templates" => template_uris,
+      "error_codes_by_family" => error_codes_by_family
     }
   end
 

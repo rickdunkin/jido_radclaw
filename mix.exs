@@ -12,13 +12,17 @@ defmodule JidoClaw.MixProject do
       consolidate_protocols: Mix.env() != :dev,
       elixirc_paths: elixirc_paths(Mix.env()),
       listeners: [Phoenix.CodeReloader],
-      # Intentionally redefining five upstream modules — silences the
+      # Intentionally redefining seven upstream modules — silences the
       # resulting "redefining module" warnings globally so
       # `--warnings-as-errors` stays green (single-sourced in
       # JidoClaw.Core.DependencyPatches.patched_modules/0):
       #   - lib/jido_claw/core/anubis_tools_handler_patch.ex
       #     (Anubis.Server.Handlers.Tools 1.6.2 — rescues Peri crash on
       #     jido_mcp JSON Schema, atomizes arguments for Jido actions)
+      #   - lib/jido_claw/core/jido_mcp_runtime_patch.ex
+      #     (Jido.MCP.Server.Runtime — tool error arms route through the
+      #     served-MCP error boundary: public server gets the dual-content
+      #     structured envelope, other servers keep the legacy arm)
       #   - lib/jido_claw/core/mcp_stdio_transport_patch.ex
       #     (Jido.MCP.Transport.STDIO — default-deny env scrub on the spawned
       #     MCP subprocess)
@@ -28,9 +32,15 @@ defmodule JidoClaw.MixProject do
       #     (Jido.Shell.ShellSession — public update_env/2 wrapper)
       #   - lib/jido_claw/core/jido_shell_session_server_patch.ex
       #     (Jido.Shell.ShellSessionServer — :update_env call handler)
+      #   - lib/jido_claw/core/jido_exec_patch.ex
+      #     (jido_action 2.3.1 Jido.Exec — compile-time GENERATED fork:
+      #     opt-gated wrap-provenance marker for the served-MCP error
+      #     boundary's tier-1 witness; its Code.compile_string sets the
+      #     conflict option locally, but the module still redefines
+      #     Jido.Exec in every VM that loads it)
       # Trade-off: accidental shadow of an existing module anywhere else
       # won't warn either; mitigation is code review on new defmodule
-      # statements. Remove this line once all five patches above are
+      # statements. Remove this line once all seven patches above are
       # retired (upstream fixes or forks).
       elixirc_options: [ignore_module_conflict: true],
       deps: deps(),
@@ -77,7 +87,13 @@ defmodule JidoClaw.MixProject do
     [
       main_module: JidoClaw.CLI.Main,
       name: "jidoclaw",
-      embed_elixir: true
+      embed_elixir: true,
+      # No pre-main/1 application boot: main/1's booting paths self-start
+      # the app (checked via CLI.Main.start_app_or_halt!/0), and the
+      # pre-boot `--third-party-licenses` flag depends on nothing starting
+      # first. Mix's default (:jido_claw) would auto-start the whole app —
+      # Repo included — before main/1 runs.
+      app: nil
     ]
   end
 
@@ -276,13 +292,14 @@ defmodule JidoClaw.MixProject do
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ash.setup --quiet", "test"],
       precommit: [
+        "deps.unlock --unused",
+        "format --check-formatted",
+        "ash_postgres.squash_snapshots --into zero --check",
         "jidoclaw.compile_check",
         "jidoclaw.system_prompt.check",
         "jidoclaw.jido_md.check",
         "jidoclaw.system_docs.check",
         "jidoclaw.graphql.schema.check",
-        "deps.unlock --unused",
-        "format --check-formatted",
         "reach.check --arch --smells --strict",
         "credo --strict",
         "dialyzer --format short",

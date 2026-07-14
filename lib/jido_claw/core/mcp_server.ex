@@ -89,6 +89,7 @@ defmodule JidoClaw.MCPServer do
   # unaffected.
   component(JidoClaw.MCPServer.Resources.WorkflowStage)
 
+  alias JidoClaw.MCPServer.ErrorCodes
   alias JidoClaw.MCPServer.SurfaceVersion
 
   # PD1-1: the wire identity carries the APP version via `Application.spec/2`
@@ -99,6 +100,14 @@ defmodule JidoClaw.MCPServer do
   @impl Anubis.Server
   @spec server_info() :: %{String.t() => String.t()}
   def server_info, do: %{"name" => "jido_claw", "version" => SurfaceVersion.app_version()}
+
+  # PD1-2: the served error-contract stability sentence rides the MCP
+  # initialize handshake. Anubis's `maybe_define_server_instructions` sees
+  # this definition (`Module.defines?`) and skips its generated nil fallback
+  # (jido_mcp passes no `:instructions`).
+  @impl Anubis.Server
+  @spec server_instructions() :: String.t()
+  def server_instructions, do: ErrorCodes.stability_sentence()
 
   @doc """
   The MCP-published tool modules, derived from the generated `__publish__/0`

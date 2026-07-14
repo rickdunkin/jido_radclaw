@@ -29,16 +29,28 @@ defmodule JidoClaw.Agent.LoopGuardTest do
     end)
   end
 
+  # Mint a failure_sig through the public classifier — exactly the facade's
+  # derivation, so seeded observations can never drift from it.
+  defp fsig(text, code \\ :execution_error, details \\ %{}) do
+    {:failure, sig} =
+      LoopGuard.classify_result(
+        {:error, %{code: code, message: text, details: details}},
+        %{}
+      )
+
+    sig
+  end
+
   defp failures(state, tool, text, count, opts \\ @opts) do
     Enum.map_reduce(1..count//1, state, fn _i, acc ->
-      {verdict, acc} = LoopGuard.check_result(acc, {tool, true, text}, opts)
+      {verdict, acc} = LoopGuard.check_result(acc, {tool, true, fsig(text)}, opts)
       {verdict, acc}
     end)
   end
 
   defp filler_failures(state, count, offset) do
     Enum.map_reduce(1..count//1, state, fn i, acc ->
-      observation = {"other_tool", true, "unique filler error #{offset + i}"}
+      observation = {"other_tool", true, fsig("unique filler error #{offset + i}")}
       {verdict, acc} = LoopGuard.check_result(acc, observation, @opts)
       {verdict, acc}
     end)
@@ -63,7 +75,7 @@ defmodule JidoClaw.Agent.LoopGuardTest do
         {before_verdicts, seeded} = failures(%KeyState{}, "edit_file", text, k1)
 
         {success_verdict, cleared} =
-          LoopGuard.check_result(seeded, {"edit_file", false, ""}, @opts)
+          LoopGuard.check_result(seeded, {"edit_file", false, nil}, @opts)
 
         {after_verdicts, _state} = failures(cleared, "edit_file", text, k2)
 
@@ -75,11 +87,11 @@ defmodule JidoClaw.Agent.LoopGuardTest do
     test "(a2) a T2 success never clears T1 signatures — the interleaved repair loop triggers" do
       text = "old_string not found in lib/foo.ex"
 
-      {v1, state1} = LoopGuard.check_result(%KeyState{}, {"edit_file", true, text}, @opts)
-      {ok1, state2} = LoopGuard.check_result(state1, {"read_file", false, ""}, @opts)
-      {v2, state3} = LoopGuard.check_result(state2, {"edit_file", true, text}, @opts)
-      {ok2, state4} = LoopGuard.check_result(state3, {"read_file", false, ""}, @opts)
-      {v3, _state} = LoopGuard.check_result(state4, {"edit_file", true, text}, @opts)
+      {v1, state1} = LoopGuard.check_result(%KeyState{}, {"edit_file", true, fsig(text)}, @opts)
+      {ok1, state2} = LoopGuard.check_result(state1, {"read_file", false, nil}, @opts)
+      {v2, state3} = LoopGuard.check_result(state2, {"edit_file", true, fsig(text)}, @opts)
+      {ok2, state4} = LoopGuard.check_result(state3, {"read_file", false, nil}, @opts)
+      {v3, _state} = LoopGuard.check_result(state4, {"edit_file", true, fsig(text)}, @opts)
 
       assert [v1, ok1, v2, ok2] == [:ok, :ok, :ok, :ok]
 
@@ -91,11 +103,13 @@ defmodule JidoClaw.Agent.LoopGuardTest do
       check all(gap1 <- integer(0..5), gap2 <- integer(0..5)) do
         text = "Permission denied: /etc/shadow"
 
-        {v1, state1} = LoopGuard.check_result(%KeyState{}, {"run_command", true, text}, @opts)
+        {v1, state1} =
+          LoopGuard.check_result(%KeyState{}, {"run_command", true, fsig(text)}, @opts)
+
         {fill1, state2} = filler_failures(state1, gap1, 0)
-        {v2, state3} = LoopGuard.check_result(state2, {"run_command", true, text}, @opts)
+        {v2, state3} = LoopGuard.check_result(state2, {"run_command", true, fsig(text)}, @opts)
         {fill2, state4} = filler_failures(state3, gap2, gap1)
-        {v3, _state} = LoopGuard.check_result(state4, {"run_command", true, text}, @opts)
+        {v3, _state} = LoopGuard.check_result(state4, {"run_command", true, fsig(text)}, @opts)
 
         assert [v1, v2] == [:ok, :ok]
         assert Enum.all?(fill1 ++ fill2, &(&1 == :ok))
@@ -199,7 +213,9 @@ defmodule JidoClaw.Agent.LoopGuardTest do
         assert attempt_verdict == {:halt, reason}
         assert after_attempt == state, "a blocked attempt must not refresh any timer"
 
-        {result_verdict, after_result} = LoopGuard.check_result(state, {tool, true, "x"}, @opts)
+        {result_verdict, after_result} =
+          LoopGuard.check_result(state, {tool, true, fsig("x")}, @opts)
+
         assert result_verdict == :ok
         assert after_result == state
       end
@@ -220,13 +236,19 @@ defmodule JidoClaw.Agent.LoopGuardTest do
   describe "classify_result/2 (typed classification)" do
     test "error tuples classify as failures with the message text, effects tolerated" do
       reason = %{code: :execution_error, message: "boom", details: %{}}
-      assert LoopGuard.classify_result({:error, reason}, %{}) == {:failure, "boom"}
-      assert LoopGuard.classify_result({:error, reason, [:fx]}, %{}) == {:failure, "boom"}
+
+      assert {:failure, %{display: "boom", identity: identity}} =
+               LoopGuard.classify_result({:error, reason}, %{})
+
+      assert is_binary(identity)
+
+      assert {:failure, %{display: "boom", identity: ^identity}} =
+               LoopGuard.classify_result({:error, reason, [:fx]}, %{})
     end
 
     test "nonzero exit_code is a failure; zero exit and plain ok shapes are successes" do
-      assert LoopGuard.classify_result({:ok, %{exit_code: 1, output: "err text"}}, %{}) ==
-               {:failure, "err text"}
+      assert {:failure, %{display: "err text"}} =
+               LoopGuard.classify_result({:ok, %{exit_code: 1, output: "err text"}}, %{})
 
       assert LoopGuard.classify_result({:ok, %{exit_code: 0, output: "fine"}}, %{}) == :success
       assert LoopGuard.classify_result({:ok, %{listing: []}}, %{}) == :success
@@ -236,18 +258,19 @@ defmodule JidoClaw.Agent.LoopGuardTest do
     test "blank nonzero-exit output falls back to exit status + printable digest prefix" do
       params = %{command: "silent-failure"}
 
-      assert {:failure, text} =
+      assert {:failure, %{display: text} = sig} =
                LoopGuard.classify_result({:ok, %{exit_code: 2, output: "  "}}, params)
 
       assert text =~ ~r/\Aexit status 2 \(args:[0-9a-f]{8}\)\z/
 
       assert LoopGuard.classify_result({:ok, %{exit_code: 2, output: ""}}, params) ==
-               {:failure, text}
+               {:failure, sig}
 
-      assert {:failure, other} =
+      assert {:failure, %{display: other, identity: other_identity}} =
                LoopGuard.classify_result({:ok, %{exit_code: 2, output: ""}}, %{command: "x"})
 
       refute other == text, "different silent commands must not collide into one signature"
+      refute other_identity == sig.identity
     end
 
     test "MCP isError OK shapes classify as failures with the joined content text" do
@@ -261,27 +284,28 @@ defmodule JidoClaw.Agent.LoopGuardTest do
         ]
       }
 
-      expected = {:failure, "rate limit exceeded try again later"}
-      assert LoopGuard.classify_result({:ok, output}, %{}) == expected
-      assert LoopGuard.classify_result({:ok, output, [:fx]}, %{}) == expected
+      assert {:failure, %{display: "rate limit exceeded try again later"} = sig} =
+               LoopGuard.classify_result({:ok, output}, %{})
+
+      assert LoopGuard.classify_result({:ok, output, [:fx]}, %{}) == {:failure, sig}
     end
 
     test "blank/absent isError content falls back to the flag + printable digest prefix" do
       params = %{server: "github", query: "x"}
 
-      assert {:failure, text} =
+      assert {:failure, %{display: text} = sig} =
                LoopGuard.classify_result({:ok, %{"isError" => true, "content" => []}}, params)
 
       assert text =~ ~r/\AisError \(args:[0-9a-f]{8}\)\z/
 
-      assert LoopGuard.classify_result({:ok, %{"isError" => true}}, params) == {:failure, text}
+      assert LoopGuard.classify_result({:ok, %{"isError" => true}}, params) == {:failure, sig}
 
       assert LoopGuard.classify_result(
                {:ok, %{"isError" => true, "content" => [%{"type" => "text", "text" => "  "}]}},
                params
-             ) == {:failure, text}
+             ) == {:failure, sig}
 
-      assert {:failure, other} =
+      assert {:failure, %{display: other, identity: other_identity}} =
                LoopGuard.classify_result(
                  {:ok, %{"isError" => true, "content" => []}},
                  %{server: "other"}
@@ -289,6 +313,8 @@ defmodule JidoClaw.Agent.LoopGuardTest do
 
       refute other == text,
              "different silent isError failures must not collide into one signature"
+
+      refute other_identity == sig.identity
     end
 
     test "isError false or non-boolean stays a success" do
@@ -430,11 +456,112 @@ defmodule JidoClaw.Agent.LoopGuardTest do
     end
   end
 
+  describe "identity derivation (the internal structural fingerprint)" do
+    test "same failure twice → same signature; the identity never appears in the display" do
+      a = fsig("boom", :execution_error, %{field: "path"})
+      b = fsig("boom", :execution_error, %{field: "path"})
+
+      assert a == b
+      refute a.display =~ a.identity
+    end
+
+    test "same tool + message + details but DIFFERENT codes → distinct identities" do
+      a = fsig("boom", :execution_error, %{})
+      b = fsig("boom", :config_error, %{})
+
+      assert a.display == b.display
+      refute a.identity == b.identity
+    end
+
+    test "a previously-distinct message-only pair stays distinct" do
+      a = fsig("error alpha")
+      b = fsig("error beta")
+      refute a.identity == b.identity
+    end
+
+    test "colliding 100-char message prefixes are split by exact-kept skill / reason_head" do
+      shared = String.duplicate("p", 120)
+
+      a = fsig(shared, :skill_run_failed, %{skill: "alpha_skill", reason_head: "exit.timeout"})
+      b = fsig(shared, :skill_run_failed, %{skill: "bravo_skill", reason_head: "exit.timeout"})
+      c = fsig(shared, :skill_run_failed, %{skill: "alpha_skill", reason_head: "exit.killed"})
+
+      assert a.display == b.display and b.display == c.display
+      refute a.identity == b.identity
+      refute a.identity == c.identity
+      refute b.identity == c.identity
+    end
+
+    test "EQUAL-LENGTH skill names split (exact-value allowlist beats a length projection)" do
+      a = fsig("x", :skill_run_failed, %{skill: "aaaa", reason_head: "exit"})
+      b = fsig("x", :skill_run_failed, %{skill: "bbbb", reason_head: "exit"})
+      refute a.identity == b.identity
+    end
+
+    test "secrets of ANY length hit the constant marker — same signature, no digest emitted" do
+      a = fsig("request failed", :tool_error, %{token: "s3cret-short"})
+
+      b =
+        fsig("request failed", :tool_error, %{
+          token: "much-longer-secret-value-#{String.duplicate("x", 40)}"
+        })
+
+      assert a.identity == b.identity
+      refute a.display =~ "s3cret"
+      refute a.display =~ a.identity
+    end
+
+    test "details differing only in pids/refs (values AND map keys) → same signature" do
+      ref1 = make_ref()
+      ref2 = make_ref()
+
+      a = fsig("boom", :tool_error, %{%{} => 1, owner: self(), ref: ref1})
+      b = fsig("boom", :tool_error, %{%{} => 1, owner: self(), ref: ref2})
+      assert a.identity == b.identity
+
+      keyed_a = fsig("boom", :tool_error, %{ref1 => "v"})
+      keyed_b = fsig("boom", :tool_error, %{ref2 => "v"})
+      assert keyed_a.identity == keyed_b.identity
+    end
+
+    test "two distinct keys projecting to the same marker preserve BOTH entries" do
+      one_entry = fsig("boom", :tool_error, %{"ka" => 1})
+      two_entries = fsig("boom", :tool_error, %{"ka" => 1, "kb" => 2})
+      refute one_entry.identity == two_entries.identity
+    end
+
+    test "volatile numeric fields (call_count-style) are class-marked → same signature" do
+      a = fsig("budget exceeded", :lua_call_budget_exceeded, %{call_count: 51, retry: false})
+      b = fsig("budget exceeded", :lua_call_budget_exceeded, %{call_count: 207, retry: false})
+      assert a.identity == b.identity
+    end
+
+    test "a multibyte exact-kept value truncated at the byte bound stays valid UTF-8" do
+      long_multibyte = String.duplicate("é", 200)
+      sig = fsig("boom", :skill_run_failed, %{skill: long_multibyte})
+      assert sig.identity =~ ~r/\A[0-9a-f]{64}\z/
+    end
+
+    test "a huge details map trips the projection budget into ONE stable sentinel identity" do
+      huge = Map.new(1..60_000, fn i -> {"k#{i}", i} end)
+
+      a = fsig("boom", :tool_error, huge)
+      b = fsig("boom", :tool_error, huge)
+      c = fsig("boom", :tool_error, %{})
+
+      assert a.identity == b.identity
+      refute a.identity == c.identity
+    end
+  end
+
   describe "halt_message/3 and halt_details/3" do
     defp halted_state do
+      sig = fsig("old_string not found in lib/foo.ex")
+
       %KeyState{
         call_keys: List.duplicate({"read_file", "d"}, 4),
-        failure_sigs: List.duplicate({"edit_file", "old_string not found in lib/foo.ex"}, 3),
+        failure_sigs: List.duplicate({"edit_file", sig.identity}, 3),
+        sig_displays: %{{"edit_file", sig.identity} => sig.display},
         total_calls: 100
       }
     end

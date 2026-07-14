@@ -89,28 +89,7 @@ defmodule JidoClaw.JidoMd do
     with the `run_skill` tool or the `/skill <name>` REPL command.
 
     #{skills_section()}
-    ### Custom Skills
-
-    Create `.jido/skills/<name>.yaml` with this format:
-
-    ```yaml
-    name: my_skill
-    description: What this skill does
-    steps:
-      - template: researcher
-        task: "Explore the auth module and identify all entry points"
-      - template: coder
-        task: "Implement the changes based on the research findings"
-      - template: test_runner
-        task: "Run the full test suite and verify nothing is broken"
-    synthesis: "Summarize what was done and any remaining issues"
-    ```
-
-    The output of previous steps is available as context for subsequent steps.
-    The `synthesis` field is the final prompt used to summarize all step outputs
-    into a single result.
-
-    #{template_names_lines()}
+    #{custom_skills_section()}
     ---
 
     ## Tools (#{length(JidoClaw.Agent.tool_modules())} total)
@@ -273,6 +252,46 @@ defmodule JidoClaw.JidoMd do
     dependent steps wait for their prerequisites. When a skill declares
     `mode: iterative`, its generator step and evaluator step loop until the
     evaluator passes the result or `max_iterations` is reached.
+    """
+  end
+
+  @doc """
+  The generated `### Custom Skills` section, ending with the derived
+  template-names lines — public because `JidoClaw.JidoMd.Check` byte-compares
+  this exact fragment against the committed `.jido/JIDO.md` (scoped to this
+  section only; the Architecture/Conventions sections stay operator-editable),
+  so a generator prose change fails precommit until the committed file
+  regenerates.
+  """
+  @spec custom_skills_section() :: String.t()
+  def custom_skills_section do
+    """
+    ### Custom Skills
+
+    Create `.jido/skills/<name>.yaml` with this format:
+
+    ```yaml
+    name: my_skill
+    description: What this skill does
+    steps:
+      - template: researcher
+        task: "Explore the auth module and identify all entry points"
+      - template: coder
+        task: "Implement the changes based on the research findings"
+      - template: test_runner
+        task: "Run the full test suite and verify nothing is broken"
+    synthesis: "Summarize what was done and any remaining issues"
+    ```
+
+    The `name` field must be a valid UTF-8 string of at most 256 bytes — a
+    skill whose name violates the rule is excluded at load with a per-file
+    error log, and lookups report it as unknown.
+
+    The output of previous steps is available as context for subsequent steps.
+    The `synthesis` field is the final prompt used to summarize all step outputs
+    into a single result.
+
+    #{template_names_lines()}\
     """
   end
 

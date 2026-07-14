@@ -1,4 +1,8 @@
 defmodule JidoClaw.Tools.RunCommand do
+  # The {code, message, details} map is the LLM-facing wire-error contract
+  # (shared with JidoClaw.Tools.Error) — an explicit API surface, not
+  # incidental duplication.
+  # reach:disable-for-this-file fixed_shape_map
   @moduledoc """
   Execute a shell command and return its output.
 

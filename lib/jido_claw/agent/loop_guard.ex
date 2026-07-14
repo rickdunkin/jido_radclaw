@@ -19,7 +19,7 @@ defmodule JidoClaw.Agent.LoopGuard do
      `repeat_window` (8) recorded calls halts **pre-execution** (the 4th
      call never runs — an improvement over OSA's post-batch check).
      Success-agnostic: it catches useless-success loops too.
-  2. **Failure signatures (staged)** — `{tool, signature_text}` pairs are
+  2. **Failure signatures (staged)** — `{tool, identity}` pairs are
      recorded for error results only (`{:error, _}` tuples, run_command's
      nonzero-`exit_code` OK map, and the string-keyed `"isError" => true`
      OK map the MCP proxies deliberately re-surface as `{:ok, data}`); any
@@ -31,6 +31,23 @@ defmodule JidoClaw.Agent.LoopGuard do
      a deliberate deviation from OSA's *documented* clear-all, which would
      mask the archetypal edit-fail → read-ok → edit-fail repair loop
      (OSA's *code* never cleared at all).
+
+     Classification produces an explicit `{identity, display}` pair
+     (`t:failure_sig/0`): `identity` is what the Store compares and counts —
+     `JidoClaw.Core.CanonicalHash.sha256_term/1` over `{code,
+     message_prefix, details_fingerprint}`, where the CODE is an explicit
+     component, `message_prefix` is the 100-char `signature_text/1`, and
+     `details_fingerprint` is `JidoClaw.Core.JsonSafe.fingerprint_projection/2`
+     over the envelope's details (field-aware: `skill`/`reason_head`/`field`
+     values stay exact and bounded; other binaries, numbers, and runtime
+     identities collapse to constant class markers — a budget trip yields a
+     constant sentinel component). `display` is the bounded human text
+     directives and halt messages render. The identity is held INTERNALLY
+     in the signature state — never emitted in messages, halt directives,
+     telemetry text, or logs — and only ADDS distinction beside the message
+     component, so no previously-distinct signatures merge; identical
+     failures keep identical signatures (pids/refs/volatile numbers in
+     details contribute class markers, never per-attempt values).
   3. **Absolute call cap** — `max_calls` (100) executed calls per key; the
      next call is blocked pre-execution. Crossing `warn_pct` (80%) logs and
      traces a one-time warning, never injected into results (OSA parity).
@@ -98,18 +115,23 @@ defmodule JidoClaw.Agent.LoopGuard do
   require Logger
 
   alias JidoClaw.Agent.LoopGuard.Store
+  alias JidoClaw.Core.CanonicalHash
+  alias JidoClaw.Core.JsonSafe
   alias JidoClaw.Reasoning.Compactor.Identity
 
   defmodule KeyState do
     @moduledoc """
     Per-key guard state. `call_keys` (`{tool, args_digest}`) and
-    `failure_sigs` (`{tool, signature_text}`) are **newest-first** sliding
-    windows (prepend + `Enum.take/2`). Timestamps are monotonic
-    milliseconds; `halted` is `nil` or the halt reason.
+    `failure_sigs` (`{tool, identity}`) are **newest-first** sliding
+    windows (prepend + `Enum.take/2`); `sig_displays` maps each windowed
+    `{tool, identity}` to the bounded display text directives render
+    (pruned with the window, cleared with the signatures). Timestamps are
+    monotonic milliseconds; `halted` is `nil` or the halt reason.
     """
     @type t :: %__MODULE__{}
     defstruct call_keys: [],
               failure_sigs: [],
+              sig_displays: %{},
               total_calls: 0,
               recovery_count: 0,
               halted: nil,
@@ -119,6 +141,12 @@ defmodule JidoClaw.Agent.LoopGuard do
   end
 
   @type halt_reason :: :identical_repeat | :call_cap | :failure_signature
+
+  @typedoc """
+  One classified failure observation: `identity` is the internal comparison
+  key (never emitted); `display` is the bounded human text directives render.
+  """
+  @type failure_sig :: %{identity: String.t(), display: String.t()}
 
   # Thresholds verbatim from OSA doom_loop.ex @ f60e933b (repeat 4-in-8,
   # failure 3-in-20, cap 100 with 80% warn, two recovery nudges). These are
@@ -226,8 +254,8 @@ defmodule JidoClaw.Agent.LoopGuard do
 
   defp observation(result, params) do
     case classify_result(result, params) do
-      :success -> {:ok, false, ""}
-      {:failure, text} -> {:ok, true, text}
+      :success -> {:ok, false, nil}
+      {:failure, sig} -> {:ok, true, sig}
       :skip -> :skip
     end
   end
@@ -248,30 +276,78 @@ defmodule JidoClaw.Agent.LoopGuard do
 
   @doc """
   Typed result classification: `:skip` (unknown shape — record nothing),
-  `:success`, or `{:failure, text}`. Runs after `Error.normalize_result/1`,
-  so errors are `{:error, %{code, message, details}}` (2- or 3-tuple); two
+  `:success`, or `{:failure, sig}` where `sig` is a `t:failure_sig/0`
+  `{identity, display}` pair. Runs after `Error.normalize_result/1`, so
+  errors are `{:error, %{code, message, details}}` (2- or 3-tuple); two
   `{:ok, _}` shapes are error-bearing — run_command's nonzero-`exit_code`
   map, and the string-keyed MCP `"isError" => true` contract the generated
   proxies deliberately re-surface as `{:ok, data}` (literal `true` only —
   `false`/non-boolean flags classify as successes).
   """
-  @spec classify_result(term(), term()) :: :skip | :success | {:failure, String.t()}
-  def classify_result({:error, reason}, _params), do: {:failure, error_text(reason)}
-  def classify_result({:error, reason, _effects}, _params), do: {:failure, error_text(reason)}
+  @spec classify_result(term(), term()) :: :skip | :success | {:failure, failure_sig()}
+  def classify_result({:error, reason}, _params), do: {:failure, envelope_sig(reason)}
+  def classify_result({:error, reason, _effects}, _params), do: {:failure, envelope_sig(reason)}
 
   def classify_result({:ok, %{exit_code: code} = output}, params)
       when is_integer(code) and code != 0,
-      do: {:failure, exit_text(output, code, params)}
+      do: {:failure, plain_sig(exit_text(output, code, params))}
 
   def classify_result({:ok, %{"isError" => true} = output}, params),
-    do: {:failure, mcp_error_text(output, params)}
+    do: {:failure, plain_sig(mcp_error_text(output, params))}
 
   def classify_result({:ok, %{"isError" => true} = output, _effects}, params),
-    do: {:failure, mcp_error_text(output, params)}
+    do: {:failure, plain_sig(mcp_error_text(output, params))}
 
   def classify_result({:ok, _output}, _params), do: :success
   def classify_result({:ok, _output, _effects}, _params), do: :success
   def classify_result(_other, _params), do: :skip
+
+  # ── failure_sig derivation (identity internal; display human) ───────────
+
+  # Non-sensitive-by-construction key names whose fingerprint values stay
+  # exact (bounded): code-level identifiers, never user data.
+  @fingerprint_exact_keys ["skill", "reason_head", "field"]
+
+  # Constant identity components: envelopes without a details map, and the
+  # budget-trip sentinel (a same-shape huge details map keeps one identity).
+  @no_details_component :no_details
+  @fingerprint_budget_sentinel :details_fingerprint_budget_exceeded
+
+  defp envelope_sig(reason) do
+    display = signature_text(error_text(reason))
+
+    %{
+      identity:
+        CanonicalHash.sha256_term(
+          {envelope_code(reason), display, details_fingerprint(envelope_details(reason))}
+        ),
+      display: display
+    }
+  end
+
+  defp plain_sig(text) do
+    display = signature_text(text)
+
+    %{
+      identity: CanonicalHash.sha256_term({nil, display, @no_details_component}),
+      display: display
+    }
+  end
+
+  defp envelope_code(%{code: code}) when is_atom(code), do: code
+  defp envelope_code(_reason), do: nil
+
+  defp envelope_details(%{details: details}), do: details
+  defp envelope_details(_reason), do: nil
+
+  defp details_fingerprint(details) when is_map(details) do
+    case JsonSafe.fingerprint_projection(details, exact_keys: @fingerprint_exact_keys) do
+      {:ok, projection, _bytes} -> projection
+      {:budget_exceeded, _info} -> @fingerprint_budget_sentinel
+    end
+  end
+
+  defp details_fingerprint(_absent), do: @no_details_component
 
   defp error_text(%{message: message}) when is_binary(message) and message != "", do: message
   defp error_text(reason), do: inspect(reason)
@@ -514,21 +590,32 @@ defmodule JidoClaw.Agent.LoopGuard do
   Detection ported from Miosa-osa/OSA @ f60e933b, Apache-2.0
   (`check_signatures/3` + the staged recovery); the
   `:ok | {:nudge, directive} | {:halt, reason}` contract and per-tool
-  success clearing are ours. A halted state is a no-op.
+  success clearing are ours. The failure observation carries a
+  `t:failure_sig/0` (`classify_result/2` output): the internal `identity`
+  is what the window compares and counts; the bounded `display` is kept
+  beside the window for directive/halt rendering only. A halted state is a
+  no-op.
   """
-  @spec check_result(KeyState.t(), {String.t(), boolean(), String.t()}, keyword()) ::
+  @spec check_result(KeyState.t(), {String.t(), boolean(), failure_sig() | nil}, keyword()) ::
           {:ok | {:nudge, String.t()} | {:halt, halt_reason()}, KeyState.t()}
   def check_result(%KeyState{halted: reason} = state, _observation, _opts)
       when not is_nil(reason) do
     {:ok, state}
   end
 
-  def check_result(%KeyState{} = state, {tool, true, error_text}, opts) do
+  def check_result(
+        %KeyState{} = state,
+        {tool, true, %{identity: identity, display: display}},
+        opts
+      ) do
     now = now(opts)
-    sig = {tool, signature_text(error_text)}
+    sig = {tool, identity}
     window = Keyword.get(opts, :failure_window, @failure_window)
     sigs = Enum.take([sig | state.failure_sigs], window)
-    state = %{state | failure_sigs: sigs, last_activity: now}
+    # Newest display wins per signature; entries falling out of the window
+    # are pruned so the display map stays window-bounded.
+    displays = Map.take(Map.put(state.sig_displays, sig, display), sigs)
+    state = %{state | failure_sigs: sigs, sig_displays: displays, last_activity: now}
 
     case repeated_signature(sigs, Keyword.get(opts, :failure_threshold, @failure_threshold)) do
       nil -> {:ok, state}
@@ -536,24 +623,28 @@ defmodule JidoClaw.Agent.LoopGuard do
     end
   end
 
-  def check_result(%KeyState{} = state, {tool, false, _text}, opts) do
+  def check_result(%KeyState{} = state, {tool, false, _sig}, opts) do
     # Per-tool clearing (deliberate deviation — see the moduledoc): a clean
     # success of tool T clears only T's accumulated signatures.
-    sigs = Enum.reject(state.failure_sigs, fn {sig_tool, _text} -> sig_tool == tool end)
-    {:ok, %{state | failure_sigs: sigs, last_activity: now(opts)}}
+    sigs = Enum.reject(state.failure_sigs, fn {sig_tool, _identity} -> sig_tool == tool end)
+    displays = Map.take(state.sig_displays, sigs)
+    {:ok, %{state | failure_sigs: sigs, sig_displays: displays, last_activity: now(opts)}}
   end
 
   # Staged recovery: nudge (clear signatures, count the recovery) until
   # `max_recoveries` is spent, then halt — leaving the triggering
-  # signatures in place so `halt_message/3` can derive them.
-  defp stage_response(state, {tool, text}, count, now, opts) do
+  # signatures in place so `halt_message/3` can derive them. Directives
+  # render the DISPLAY text; the identity never leaves the state.
+  defp stage_response(state, {tool, _identity} = sig, count, now, opts) do
     if state.recovery_count >= Keyword.get(opts, :max_recoveries, @max_recoveries) do
       {{:halt, :failure_signature}, %{state | halted: :failure_signature, halted_at: now}}
     else
-      {{:nudge, recovery_directive(tool, text, count)},
-       %{state | failure_sigs: [], recovery_count: state.recovery_count + 1}}
+      {{:nudge, recovery_directive(tool, display_for(state, sig), count)},
+       %{state | failure_sigs: [], sig_displays: %{}, recovery_count: state.recovery_count + 1}}
     end
   end
+
+  defp display_for(%KeyState{sig_displays: displays}, sig), do: Map.get(displays, sig, "")
 
   # First (newest) signature whose windowed frequency reaches the
   # threshold. At most one signature can be at/over threshold (each append
@@ -634,7 +725,8 @@ defmodule JidoClaw.Agent.LoopGuard do
   end
 
   def halt_message(:failure_signature, %KeyState{} = state, _opts) do
-    {{tool, text}, count} = dominant_signature(state)
+    {{tool, _identity} = sig, count} = dominant_signature(state)
+    text = display_for(state, sig)
 
     String.trim("""
     I hit the same error #{count} times with #{tool}: #{text}
@@ -669,7 +761,7 @@ defmodule JidoClaw.Agent.LoopGuard do
   end
 
   def halt_details(:failure_signature, %KeyState{} = state, _opts) do
-    {{tool, _text}, count} = dominant_signature(state)
+    {{tool, _identity}, count} = dominant_signature(state)
     %{retry: false, trigger: :failure_signature, tool: tool, occurrences: count}
   end
 

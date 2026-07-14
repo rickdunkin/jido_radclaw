@@ -701,11 +701,20 @@ defmodule JidoClaw.Application do
   @doc """
   Redirect the default `:logger` handler to `:standard_error`.
 
-  Called from the `mix jidoclaw` task so framework log output does not
-  contaminate stdout (which the CLI uses for the REPL/MCP transport).
+  Called from the `mix jidoclaw` task and the escript's pre-boot paths so
+  framework log output does not contaminate stdout (which the CLI uses for
+  the REPL/MCP transport). Sets BOTH the live handler AND Elixir's
+  `:logger` app env: under the escript's `app: nil`, the `:logger` app
+  boots DURING `ensure_all_started(:jido_claw)` — after this call — and
+  re-installs its default handler from that env; without the env write,
+  dep startup logs would land back on stdout and corrupt the JSON-RPC
+  stream (no config file sets `:default_handler`, so the overwrite is
+  safe).
   """
   @spec redirect_logger_to_stderr() :: :ok | {:error, term()}
   def redirect_logger_to_stderr do
+    Application.put_env(:logger, :default_handler, config: %{type: :standard_error})
+
     :logger.remove_handler(:default)
 
     :logger.add_handler(:default, :logger_std_h, %{

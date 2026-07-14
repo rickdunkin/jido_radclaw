@@ -16,6 +16,17 @@ defmodule JidoClaw.Skills do
   The one deliberate exception is `load_skill/2`, the cache-bypassing
   fresh-disk lookup used by workflow replay (see its doc).
 
+  **Skill names must be valid UTF-8 strings of at most 256 bytes** (`name:`
+  in the YAML). A definition violating the rule — overlong, non-binary
+  (integer/list/map/explicit-null — YamlElixir's whole scalar surface), or
+  invalid UTF-8 (`!!binary`-tagged raw bytes) — is EXCLUDED at load AND
+  reload with a loud per-file error log naming the file and the violated
+  rule — never silently, never a crash; downstream lookups then honestly
+  report the skill as unknown (`run_skill` → `:unknown_skill`, replay →
+  `:not_found`). The bound keeps skill names exact wherever they ride error
+  envelopes as identifiers (the loop-guard failure-identity projection and
+  the served-MCP error contract truncate identifiers at 256 bytes).
+
   Sequential YAML format:
 
       name: full_review
@@ -477,20 +488,16 @@ defmodule JidoClaw.Skills do
     end
   end
 
+  # Skill-name byte bound (documented in the moduledoc, the JIDO.md Custom
+  # Skills section, and enforced here at the parse/load boundary for BOTH
+  # startup load and reload — load_from_disk serves both, plus the replay
+  # lookup).
+  @max_skill_name_bytes 256
+
   defp parse_skill_file(path) do
     case YamlElixir.read_from_file(path) do
       {:ok, data} when is_map(data) ->
-        skill = %__MODULE__{
-          name: Map.get(data, "name", Path.basename(path, ".yaml")),
-          description: Map.get(data, "description", ""),
-          steps: StepNormalizer.normalize(Map.get(data, "steps", [])),
-          synthesis: Map.get(data, "synthesis", ""),
-          mode: Map.get(data, "mode"),
-          max_iterations: Map.get(data, "max_iterations"),
-          deadline: Map.get(data, "deadline")
-        }
-
-        [skill]
+        build_skill(path, data)
 
       {:ok, _} ->
         []
@@ -500,4 +507,68 @@ defmodule JidoClaw.Skills do
         []
     end
   end
+
+  defp build_skill(path, data) do
+    name = Map.get(data, "name", Path.basename(path, ".yaml"))
+
+    cond do
+      not is_binary(name) ->
+        # The malformed-YAML exclusion posture, but never silent. The log
+        # names the rejected value's TERM CLASS, never the value itself —
+        # inspect/2 cannot bound integer rendering, and a huge map/list
+        # name would bloat the line even bounded.
+        Logger.error(
+          "[Skills] Excluding #{path}: skill name must be a string " <>
+            "(got: #{name_type(name)}) — quote the `name:` field"
+        )
+
+        []
+
+      byte_size(name) > @max_skill_name_bytes ->
+        # The loud per-file error names the file and the violated bound so
+        # the exclusion is diagnosable from the log alone.
+        Logger.error(
+          "[Skills] Excluding #{path}: skill name exceeds the " <>
+            "#{@max_skill_name_bytes}-byte bound (#{byte_size(name)} bytes) — " <>
+            "shorten the `name:` field"
+        )
+
+        []
+
+      not String.valid?(name) ->
+        # YamlElixir's !!binary tag can deliver raw bytes (`name: !!binary
+        # /w==` → <<255>>) — invalid UTF-8 that would poison prompt
+        # interpolation and every JSON encode downstream. Deliberately
+        # AFTER the byte-size arm so the validity scan is bounded at 256
+        # bytes. Constant message — never render the bytes.
+        Logger.error(
+          "[Skills] Excluding #{path}: skill name must be valid UTF-8 — " <>
+            "re-encode the `name:` field"
+        )
+
+        []
+
+      true ->
+        [
+          %__MODULE__{
+            name: name,
+            description: Map.get(data, "description", ""),
+            steps: StepNormalizer.normalize(Map.get(data, "steps", [])),
+            synthesis: Map.get(data, "synthesis", ""),
+            mode: Map.get(data, "mode"),
+            max_iterations: Map.get(data, "max_iterations"),
+            deadline: Map.get(data, "deadline")
+          }
+        ]
+    end
+  end
+
+  # Total classifier for the exclusion log — constant output by construction.
+  defp name_type(nil), do: "null"
+  defp name_type(v) when is_boolean(v), do: "boolean"
+  defp name_type(v) when is_integer(v), do: "integer"
+  defp name_type(v) when is_float(v), do: "float"
+  defp name_type(v) when is_list(v), do: "list"
+  defp name_type(v) when is_map(v), do: "map"
+  defp name_type(_v), do: "non-string"
 end

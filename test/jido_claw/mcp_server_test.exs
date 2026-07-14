@@ -4,6 +4,7 @@ defmodule JidoClaw.MCPServerTest do
   use ExUnit.Case, async: false
 
   alias JidoClaw.MCPServer
+  alias JidoClaw.MCPServer.ErrorCodes
 
   # MCPServer is only auto-loaded when serve_mode == :mcp; in the test VM it can
   # be unloaded, and `function_exported?/3` does NOT auto-load (unlike a direct
@@ -54,6 +55,21 @@ defmodule JidoClaw.MCPServerTest do
 
     test "server_info returns a map" do
       assert is_map(MCPServer.server_info())
+    end
+  end
+
+  describe "server_instructions/0 (PD1-2)" do
+    # Anubis's Session reads `module.server_instructions()` at init and
+    # serves it in the initialize result (anubis session.ex) — so the
+    # function-level equality below IS the initialize-level wiring pin; no
+    # separate session harness exists in this suite.
+    test "serves the error-contract stability sentence verbatim" do
+      assert MCPServer.server_instructions() == ErrorCodes.stability_sentence()
+    end
+
+    test "the hand-defined override beat anubis's generated nil fallback" do
+      assert is_binary(MCPServer.server_instructions())
+      assert MCPServer.server_instructions() =~ "content[1]"
     end
   end
 

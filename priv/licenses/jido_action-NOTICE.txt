@@ -1,0 +1,13 @@
+NOTICE -- modified third-party code (Apache License 2.0, section 4(b))
+
+This distribution includes a modified build of jido_action 2.3.1's
+`Jido.Exec` (Apache-2.0, Copyright 2026 Mike Hostetler): the two map-wrap
+arms of `handle_action_result/4` stamp an opt-gated wrap-provenance marker
+(`maybe_mark_wrap/3` + `canonical_envelope?/1`), used by JidoClaw's served-MCP
+error boundary as its tier-1 witness. All other behavior is verbatim
+upstream; the modification is generated at compile time by
+lib/jido_claw/core/jido_exec_patch.ex, whose hunk strings are the complete
+modified-file record.
+
+Unmodified license text: jido_action-APACHE-2.0.txt (alongside this file,
+and embedded in the JidoClaw escript -- run `jidoclaw --third-party-licenses`).

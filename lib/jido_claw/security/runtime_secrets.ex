@@ -1,5 +1,13 @@
 defmodule JidoClaw.Security.RuntimeSecrets do
-  @moduledoc false
+  @moduledoc """
+  The SOLE presence + quality enforcement for `SECRET_KEY_BASE` and
+  `TOKEN_SIGNING_SECRET`, run at APPLICATION STARTUP (after dotenv loading).
+  `config/runtime.exs` is total/configure-only — it sets these values when
+  present and never raises (the escript's pre-boot `--third-party-licenses`
+  route depends on config evaluation staying raise-free) — so a missing or
+  short secret fails HERE, with the same fail-fast timing for releases
+  (a release boots the app immediately after config evaluation).
+  """
 
   @endpoint JidoClaw.Web.Endpoint
   @min_secret_bytes 64

@@ -12,7 +12,9 @@ defmodule JidoClaw.MCPServer.Resources.BootstrapTest do
 
   alias Anubis.Server.Frame
   alias Anubis.Server.Handlers.Resources, as: ResourcesHandler
+  alias JidoClaw.Core.JsonSafe
   alias JidoClaw.MCPServer
+  alias JidoClaw.MCPServer.ErrorCodes
   alias JidoClaw.MCPServer.Resources.Bootstrap
   alias JidoClaw.MCPServer.SurfaceVersion
   alias JidoClaw.Orchestration.WorkflowLease
@@ -115,6 +117,38 @@ defmodule JidoClaw.MCPServer.Resources.BootstrapTest do
                "available" => false,
                "reason" => "mcp_scope_unavailable"
              }
+    end
+  end
+
+  describe "error_contract (PD1-2 wiring pin)" do
+    test "families match the WIRE representation of the live registry + the three rules" do
+      Application.delete_env(:jido_claw, :jido_claw_mcp_default_scope)
+
+      contract = payload!()["error_contract"]
+
+      # The payload is JsonSafe'd + JSON round-tripped — string keys and
+      # code strings; comparing against the atom-keyed families/0 directly
+      # can never match.
+      assert contract["families"] ==
+               JsonSafe.encode(ErrorCodes.families())
+
+      assert contract["stability"] == ErrorCodes.stability_sentence()
+
+      assert contract["envelope_location"] =~ "content[1]"
+      assert contract["envelope_location"] =~ "second content item"
+      assert contract["envelope_location"] =~ "never read it as the final item"
+
+      assert contract["scope"] =~ "Tool-result errors only"
+      assert contract["unregistered_code_fallback"] =~ "details.unregistered_code"
+
+      # The served retry definition (P1c): all THREE wire states — a remote
+      # client must never mistake policy eligibility for an executed retry,
+      # and absence is a real state too.
+      assert contract["retry_semantics"] == ErrorCodes.retry_semantics()
+      assert contract["retry_semantics"] =~ "eligibility"
+      assert contract["retry_semantics"] =~ "never records"
+      assert contract["retry_semantics"] =~ "ABSENT"
+      assert contract["retry_semantics"] =~ "do not infer"
     end
   end
 

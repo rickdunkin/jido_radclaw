@@ -25,6 +25,11 @@ defmodule JidoClaw.JidoMd.Check do
     * `:skill_names` — expected built-in skill name set (the `## Skills` section)
     * `:framework_names` — expected `- **Frameworks**:` label set (derive via
       `JidoClaw.JidoMd.framework_names/1`; `[]` means the line must be absent)
+    * `:custom_skills_fragment` — the generator's `### Custom Skills` section
+      (`JidoClaw.JidoMd.custom_skills_section/0`), byte-compared against the
+      document's section (trailing blank lines trimmed on both sides) — the
+      `system_prompt.check` precedent, scoped to the generated FRAGMENT only
+      so the operator-editable Architecture/Conventions sections stay free
     * `:path_exists?` — arity-1 predicate for Entry points paths
       (default `&File.exists?/1`; inject to bind paths to a tmp dir in tests)
   """
@@ -56,6 +61,7 @@ defmodule JidoClaw.JidoMd.Check do
       Keyword.fetch!(opts, :framework_names),
       "Frameworks line"
     )
+    |> check_custom_skills_fragment(content, Keyword.fetch!(opts, :custom_skills_fragment))
     |> check_no_machine_path(content)
     |> check_entry_points(content, Keyword.get(opts, :path_exists?, &File.exists?/1))
     |> Enum.reverse()
@@ -133,6 +139,29 @@ defmodule JidoClaw.JidoMd.Check do
   end
 
   @doc """
+  The document's `### Custom Skills` section: lines from the heading up to
+  (exclusive) the next `---` separator, trailing blank lines dropped —
+  the byte-comparison scope for the `:custom_skills_fragment` check.
+  `nil` when the heading is absent.
+  """
+  @spec custom_skills_fragment_in_doc(String.t()) :: String.t() | nil
+  def custom_skills_fragment_in_doc(content) do
+    content
+    |> String.split("\n")
+    |> Enum.drop_while(&(&1 != "### Custom Skills"))
+    |> case do
+      [] ->
+        nil
+
+      section ->
+        section
+        |> Enum.take_while(&(&1 != "---"))
+        |> drop_trailing_blanks()
+        |> Enum.join("\n")
+    end
+  end
+
+  @doc """
   Backticked paths listed as bullets under `- **Entry points**:`.
   """
   @spec entry_point_paths(String.t()) :: [String.t()]
@@ -191,6 +220,36 @@ defmodule JidoClaw.JidoMd.Check do
       {_kind, []}, acc -> acc
       {kind, names}, acc -> ["#{label}: #{kind}: #{Enum.join(names, ", ")}" | acc]
     end)
+  end
+
+  defp check_custom_skills_fragment(problems, content, expected) do
+    expected_normalized =
+      expected
+      |> String.split("\n")
+      |> drop_trailing_blanks()
+      |> Enum.join("\n")
+
+    case custom_skills_fragment_in_doc(content) do
+      nil ->
+        ["missing `### Custom Skills` section" | problems]
+
+      ^expected_normalized ->
+        problems
+
+      _drifted ->
+        [
+          "Custom Skills section drifted from the generator " <>
+            "(splice in JidoClaw.JidoMd.custom_skills_section/0)"
+          | problems
+        ]
+    end
+  end
+
+  defp drop_trailing_blanks(lines) do
+    lines
+    |> Enum.reverse()
+    |> Enum.drop_while(&(&1 == ""))
+    |> Enum.reverse()
   end
 
   defp check_no_machine_path(problems, content) do

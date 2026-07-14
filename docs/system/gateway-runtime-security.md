@@ -31,11 +31,20 @@ sources:
   - lib/jido_claw/audit/resources/event.ex
   - lib/jido_claw/conversations/resources/request_correlation.ex
   - lib/jido_claw/application.ex
+  - lib/jido_claw/security/runtime_secrets.ex
+  - lib/jido_claw/security/vault_config.ex
+  - lib/jido_claw/repo.ex
+  - lib/jido_claw/cli/main.ex
+  - lib/jido_claw/cli/run_command.ex
+  - lib/jido_claw/core/third_party_licenses.ex
   - config/test.exs
   - config/runtime.exs
   - test/support/no_external_ex_aws_http_client.ex
-verified: 2026-07-10
-verified_sha: "b2cae5cd"
+  - test/jido_claw/security/vault_config_test.exs
+  - test/jido_claw/core/jido_exec_patch_test.exs
+  - test/jido_claw/cli/run_command_boot_env_test.exs
+verified: 2026-07-14
+verified_sha: "fdf361b4"
 ---
 
 # Gateway Runtime Security
@@ -66,6 +75,51 @@ This page defines the boundaries that keep those effects tenant-safe and bounded
   deadline, and cache the last known good result.
 - Test boots do not read developer dotenv files, inherit known provider/AWS/Brave
   credentials, arm OneCLI, or start Discord.
+- **`config/runtime.exs` is TOTAL — configure-only, never raising, no fallible
+  parses.** Secret enforcement lives at APPLICATION STARTUP, after dotenv loading
+  (which runtime.exs evaluates too early to see): `SECRET_KEY_BASE` /
+  `TOKEN_SIGNING_SECRET` presence AND quality (≥ 64 bytes) are validated solely by
+  `JidoClaw.Security.RuntimeSecrets.ensure_configured!/0`; `CLOAK_KEY` /
+  `CLOAK_KEY_FILE` loading + base64/length validation solely by
+  `JidoClaw.Security.VaultConfig.ensure_configured!/0` (the former runtime.exs
+  cipher block was DELETED, not raw-passed — `configured_cipher?/1` accepts any
+  16/24/32-byte binary as an already-decoded key, and base64 encodings of
+  16/24-byte AES keys are themselves 24/32 bytes, so a raw value would silently
+  select a DIFFERENT key; the exact-decoded-bytes invariant is test-pinned per key
+  length); `POOL_SIZE` rides through as a raw string and parses in
+  `JidoClaw.Repo.init/2` (chaining `super/2` so the AshPostgres-injected
+  extension/migration/prefix config survives), raising there on junk. The dead
+  `FORGE_SANDBOX_TIMEOUT_MS` setting was removed outright (its
+  `default_timeout_ms` key had no consumer). For releases this is
+  timing-equivalent fail-fast (the app boots immediately after config
+  evaluation); what it buys is the BARE-BINARY guarantee: the escript builds with
+  `app: nil` and evaluates runtime.exs before `main/1`, so
+  `jidoclaw --third-party-licenses` (the Apache-2.0 route for the `Jido.Exec`
+  fork's license — see [mcp-server-surface](mcp-server-surface.md)) must run with
+  zero environment. Every booting CLI branch therefore starts the app through the
+  CHECKED `JidoClaw.CLI.Main.start_app_or_halt!/0` — a start failure prints to
+  stderr and exits 2 (terminal, exactly as Mix's pre-`main/1` bootstrap was), with
+  a test-only injected starter/halter seam whose failure arm is structurally
+  non-returning; the escript MCP branch redirects Logger to stderr BEFORE startup
+  so dep boot logs cannot corrupt the JSON-RPC stream (the redirect also writes
+  the `:logger, :default_handler` app env — under `app: nil` the `:logger` app
+  boots during `ensure_all_started` and would otherwise re-install its handler
+  on standard_io). Every pre-boot `Application.put_env` in `CLI.Main` passes
+  `persistent: true`: before the app is LOADED, a plain put_env is clobbered by
+  `Application.load`'s app-spec env — and, in the escript, by the embedded
+  config Mix's generated main applies `persistent: true` before `main/1` (a
+  non-persistent `:mode` left the Phoenix endpoint starting inside MCP mode;
+  the same clobber on the `run` branch booted Phoenix and config-default models
+  for one-shot runs). The `run` branch's pre-boot env
+  (`RunCommand.prime_boot_env/2`) uses the SECOND sanctioned pattern:
+  load the `:jido_claw`/`:jido_ai` app specs FIRST, then apply plain
+  overrides — equivalent protection against the load clobber (the boot's later
+  load is a no-op) without persistent writes, chosen because that helper also
+  runs inside the test VM on every run-command test row, where a persistent
+  shadow would outlive the tests' non-persistent env save/restore. The
+  unloaded-app state is subprocess-pinned in `run_command_boot_env_test.exs`
+  (config-faithful + adversarial persistent seeds, all four primed values
+  asserted).
 
 ## Mechanics
 
@@ -277,7 +331,17 @@ setting and restoring that exact variable.
   domain-wide active-tenant policy plus the tenant-matched lifecycle exception
 - `lib/jido_claw/tenants/resources/tenant.ex` — lifecycle/runtime synchronization hook
 - `config/test.exs` — external-secret and adapter disarming
-- `config/runtime.exs` — test-only Docker/OneCLI hard stops
+- `config/runtime.exs` — total/configure-only runtime config (test-only
+  Docker/OneCLI hard stops; secrets set-if-present; raw POOL_SIZE passthrough)
+- `lib/jido_claw/security/runtime_secrets.ex` — the sole SECRET_KEY_BASE /
+  TOKEN_SIGNING_SECRET presence+quality enforcement (app startup)
+- `lib/jido_claw/security/vault_config.ex` — the sole CLOAK_KEY loader/validator
+- `lib/jido_claw/repo.ex` — the POOL_SIZE parse seam (`init/2` chaining `super/2`)
+- `lib/jido_claw/cli/main.ex` — `start_app_or_halt!/0`, the pre-boot
+  `--third-party-licenses` route, the MCP-branch stderr redirect
+- `lib/jido_claw/cli/run_command.ex` — `prime_boot_env/2`, the run branch's
+  load-then-put pre-boot env
+- `lib/jido_claw/core/third_party_licenses.ex` — the escript-embedded license texts
 - `test/support/no_external_ex_aws_http_client.ex` — no-network AWS test transport
 - `test/jido_claw/accounts/user_password_test.exs` — bcrypt byte-boundary regressions
 - `test/jido_claw/web/auth_rate_limiter_test.exs` — window, sweep, and capacity regressions
@@ -285,3 +349,9 @@ setting and restoring that exact variable.
 - `test/jido_claw/chat_runtime_identity_test.exs` — collision and cleanup regressions
 - `test/jido_claw/tenants/access_test.exs` — suspension enforcement regressions
 - `test/jido_claw/web/controllers/chat_controller_test.exs` — API boundary regressions
+- `test/jido_claw/security/vault_config_test.exs` — exact-decoded-key-bytes +
+  malformed-key regressions (the deleted-cipher-block hazard pins)
+- `test/jido_claw/core/jido_exec_patch_test.exs` — Repo pool-size seam, the CLI
+  license route, `start_app_or_halt!/0` failure arms, the `app: nil` escript pin
+- `test/jido_claw/cli/run_command_boot_env_test.exs` — the subprocess-VM
+  unloaded-app pin for `prime_boot_env/2` (the escript `run` clobber regression)

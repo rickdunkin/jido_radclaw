@@ -215,6 +215,31 @@ descriptions of the surface live next to the constant, never in distant docs (th
 registry. The tool-surface sibling of camus C1-3's judge-boundary normalization
 (same move: an open interior, a closed contract at the trust boundary).
 
+**Status (2026-07-12): ✅ ADOPTED** — pre-argus Wave E #16
+([plan](../../../plans/pre-argus-wave-e-16/README.md); done-when in
+[PD-FIRST-WAVE item 2](PD-FIRST-WAVE.md)). Sketch (a)–(d) shipped with the
+build's sharpenings: 51 registered codes (8 families,
+`JidoClaw.MCPServer.ErrorCodes` — the "~25 atoms" estimate undercounted HEAD's
+48 literals), boundary ENFORCEMENT (the pad two-classifier funnel became
+`ErrorBoundary`'s unregistered-code → `tool_error` + `details.unregistered_code`
+fallback on an additive `content[1]` JSON envelope, surface v1.3) with the AST
+sweep demoted to supplemental lint, `hint_available`/`hint_expected` typed
+details, and the stability sentence on `server_instructions` +
+`jido://bootstrap`. The versioned-stderr-marker leg was NOT taken (our
+subprocess boundary is jido_mcp stdio, not a CLI relay). →
+[docs/system/mcp-server-surface.md](../../../system/mcp-server-surface.md)
+
+*Amendment (2026-07-13)*: a post-review round corrected the boundary's tier-1
+provenance — "the exact `Jido.Exec` wrap of a canonical envelope" was inferred
+from a forgeable native-error SHAPE (the wrap is lossy; a hand-built
+`ExecutionFailureError` carrying `:code`+`:details` mis-tiered into tier 1 and
+reported the nested code as the domain code). Now WITNESSED through a
+compile-time-generated fork of jido_action 2.3.1's `Jido.Exec`: the map-wrap
+arms stamp an opt-gated per-call ref (only for pre-wrap canonical envelopes),
+the boundary detaches it on exact ref identity, and tier 1 requires the
+witness. Semantics map, signed before code:
+[PORT-PD1-2-EXEC.md](PORT-PD1-2-EXEC.md).
+
 **Where in pad**: `internal/mcp/errors.go:43` — `ErrorCode` is a **closed set of 15**
 (`no_workspace, unknown_workspace, auth_required, permission_denied, item_not_found,
 not_found, validation_failed, conflict, workspace_required, backend_unreachable,
@@ -724,7 +749,13 @@ cross-cutting), each with a verdict:
 - **OQ-2 — error-contract scope.** PD1-2 scopes the enumerated code registry to the
   served MCP surface. Does `/v1/chat/completions` (and later the argus GraphQL
   error extensions) adopt the same registry or per-surface sets? Decide when PD1-2
-  lands; lean single registry, per-surface subsets.
+  lands; lean single registry, per-surface subsets. **Re-dated 2026-07-12
+  (PD1-2 landed)**: still open, with one lesson folded in — boundary
+  ENFORCEMENT beat static enumeration (the interior set is formally open;
+  the sweep alone would have false-greened), so a future REST/GraphQL
+  adoption should plan its own enforcement seam per surface, consuming the
+  one registry (`JidoClaw.MCPServer.ErrorCodes` families are already
+  family-keyed for per-surface subsetting).
 - **OQ-3 — task-ref numbering scope.** Pad's workspace-global counter exists so
   cross-collection moves preserve refs. Argus tasks live under projects; if
   cross-project moves are forbidden (likely), per-project counters + project

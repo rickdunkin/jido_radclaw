@@ -186,6 +186,53 @@ defmodule JidoClaw.Tools.Error do
     }
   end
 
+  # ---- typed hint details (PD1-2) ----
+
+  # Cap on the `available` hint list. The reduced-envelope tier at the MCP
+  # boundary re-bounds element-wise on top of this.
+  @available_names_cap 25
+
+  @doc """
+  Typed "available alternatives" hint details, generalizing the
+  LoopGuard-directive precedent: puts a canonicalized `:available` name list
+  into `details` — stringified, deduped, sorted ascending, THEN capped at
+  #{@available_names_cap} with `:available_truncated` derived from the
+  pre-cap count (sources like `JidoClaw.Skills.list/0` inherit unsorted
+  `File.ls/1` order, so an uncanonicalized cap would be nondeterministic).
+  """
+  @spec hint_available([term()], map()) :: map()
+  def hint_available(names, details \\ %{}) when is_list(names) and is_map(details) do
+    canonical =
+      names
+      |> Enum.map(&hint_string/1)
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    details = Map.put(details, :available, Enum.take(canonical, @available_names_cap))
+
+    if length(canonical) > @available_names_cap do
+      Map.put(details, :available_truncated, true)
+    else
+      details
+    end
+  end
+
+  @doc """
+  Typed expected/got hint details: puts bounded (2 KB, UTF-8-safe)
+  `:expected` and `:got` strings into `details`. Non-binary values are
+  rendered with `inspect/1` first.
+  """
+  @spec hint_expected(term(), term(), map()) :: map()
+  def hint_expected(expected, got, details \\ %{}) when is_map(details) do
+    details
+    |> Map.put(:expected, hint_string(expected))
+    |> Map.put(:got, hint_string(got))
+  end
+
+  defp hint_string(value) when is_binary(value), do: truncate_string(value)
+  defp hint_string(value) when is_atom(value), do: truncate_string(Atom.to_string(value))
+  defp hint_string(value), do: truncate_string(inspect(value))
+
   # ---- struct_code/1: strict mapping, NEVER conflates phase with code ----
 
   defp struct_code(%JidoClaw.Error.ValidationError{}), do: :validation_error

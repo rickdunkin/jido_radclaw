@@ -7,8 +7,8 @@ sources:
   - lib/jido_claw/tools/lua/bindings.ex
   - lib/jido_claw/tools/lua/runner.ex
   - lib/jido_claw/tools/lua/policy.ex
-verified: 2026-07-07
-verified_sha: "a1fa5215"
+verified: 2026-07-12
+verified_sha: "57f61037"
 ---
 
 # Lua Code-Mode Queries

@@ -50,9 +50,15 @@ defmodule JidoClaw.Agent.LoopGuard.StoreTest do
   test "check_result verdicts pass through the store (nudge then halt render)" do
     k = key("sig")
 
-    assert Store.check_result(k, {"edit_file", true, "boom"}, @opts) == :ok
-    assert Store.check_result(k, {"edit_file", true, "boom"}, @opts) == :ok
-    assert {:nudge, directive} = Store.check_result(k, {"edit_file", true, "boom"}, @opts)
+    {:failure, sig} =
+      LoopGuard.classify_result(
+        {:error, %{code: :execution_error, message: "boom", details: %{}}},
+        %{}
+      )
+
+    assert Store.check_result(k, {"edit_file", true, sig}, @opts) == :ok
+    assert Store.check_result(k, {"edit_file", true, sig}, @opts) == :ok
+    assert {:nudge, directive} = Store.check_result(k, {"edit_file", true, sig}, @opts)
     assert directive =~ "[DOOM LOOP RECOVERY:"
   end
 

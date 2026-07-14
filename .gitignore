@@ -26,3 +26,6 @@ erl_crash.dump
 
 # AR-8b sketch path — throwaway prototype sandbox (never committed)
 .prototypes/
+
+# Built escript binary (mix escript.build output)
+/jidoclaw

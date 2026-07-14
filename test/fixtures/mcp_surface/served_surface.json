@@ -1,4 +1,73 @@
 {
+  "error_codes_by_family": {
+    "host_exec": [
+      "host_command_timeout",
+      "host_deadline_exceeded"
+    ],
+    "lookup": [
+      "absolute_glob_not_allowed",
+      "glob_outside_project",
+      "handoff_not_found",
+      "not_found",
+      "session_id_mismatch",
+      "session_not_found",
+      "session_not_resolved",
+      "unknown_kind",
+      "unknown_skill",
+      "unknown_target"
+    ],
+    "lua": [
+      "lua_call_budget_exceeded",
+      "lua_compile_error",
+      "lua_deadline_exceeded",
+      "lua_empty_script",
+      "lua_memory_exceeded",
+      "lua_result_not_encodable",
+      "lua_result_too_large",
+      "lua_runtime_error",
+      "lua_script_too_large",
+      "lua_task_exited",
+      "lua_timeout",
+      "unknown_binding"
+    ],
+    "normalization": [
+      "config_error",
+      "error",
+      "exception",
+      "execution_error",
+      "failed",
+      "internal_error",
+      "still_running",
+      "timeout",
+      "tool_error",
+      "unknown_error",
+      "validation_error"
+    ],
+    "pipeline": [
+      "approval_denied",
+      "approval_pending",
+      "approval_unavailable",
+      "doom_loop"
+    ],
+    "sandbox": [
+      "sandbox_command_timeout",
+      "sandbox_deadline_exceeded",
+      "sandbox_output_limit",
+      "sandbox_unavailable"
+    ],
+    "scope": [
+      "missing_scope_tenant",
+      "missing_scope_workspace",
+      "missing_tenant",
+      "tenant_required"
+    ],
+    "workflow": [
+      "event_feed_unavailable",
+      "replay_refused",
+      "skill_cancelled",
+      "skill_run_failed"
+    ]
+  },
   "resource_templates": [
     "jido://workflows/{name}"
   ],
@@ -7,7 +76,7 @@
     "jido://bootstrap",
     "jido://workflows/catalog"
   ],
-  "surface_version": "1.2",
+  "surface_version": "1.3",
   "tool_names": [
     "agent_status",
     "edit_file",

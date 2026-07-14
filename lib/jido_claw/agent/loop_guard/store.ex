@@ -49,7 +49,7 @@ defmodule JidoClaw.Agent.LoopGuard.Store do
   end
 
   @doc "Judge + record one observed result for `key`."
-  @spec check_result(term(), {String.t(), boolean(), String.t()}, keyword()) ::
+  @spec check_result(term(), {String.t(), boolean(), LoopGuard.failure_sig() | nil}, keyword()) ::
           :ok | {:nudge, String.t()} | {:halt, String.t(), map()}
   def check_result(key, observation, opts \\ []) do
     GenServer.call(server(opts), {:check_result, key, observation, opts})

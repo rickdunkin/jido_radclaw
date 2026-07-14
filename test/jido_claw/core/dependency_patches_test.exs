@@ -15,6 +15,14 @@ defmodule JidoClaw.Core.DependencyPatchesTest do
     assert {Jido.MCP.Transport.STDIO, :jido_mcp} in DependencyPatches.patched_modules()
   end
 
+  test "the jido_mcp runtime error-boundary patch is in the canonical inventory" do
+    assert {Jido.MCP.Server.Runtime, :jido_mcp} in DependencyPatches.patched_modules()
+  end
+
+  test "the generated Jido.Exec wrap-provenance fork is in the canonical inventory" do
+    assert {Jido.Exec, :jido_action} in DependencyPatches.patched_modules()
+  end
+
   test "the release task's beam list reads the same single source" do
     assert JidoclawReleasePatches.patched_beams() == DependencyPatches.patched_modules()
   end
