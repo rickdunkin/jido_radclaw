@@ -15,3 +15,12 @@ a few notes:
 - don't commit anything, everything can remain unstaged
 - you have access to an Elixir LSP, that may be helpful as you explore the codebase
 - **no deferrals** -- if a unit seems too large to handle in a single plan, let's pause the planning and discuss how to handle it
+- When you are done writing the plan, it is automatically
+  reviewed by an external reviewer. If the review rejects it, you are
+  resumed with the rejection feedback. Validate the feedback, and if valid
+  resolve the findings in the plan; for any feedback not found to be valid,
+  include the finding in the plan in its own invalid findings section and
+  provide your reasoning for disagreement. DO NOT write changelog-type
+  comments (revised, round n, rev n, etc). The only acknowledgement of the
+  review should come in the form of the refutation section (if needed). Treat
+  the plan as a living document, it should always be greenfield.
