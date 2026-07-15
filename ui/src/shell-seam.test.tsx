@@ -19,7 +19,32 @@ vi.mock("./lib/shell-data.ts", () => ({
   }),
 }));
 
-test("both bars render counts from the seam, never literals", async () => {
+// The approvals nav badge no longer reads shell-data — it derives from the
+// approvals summary seam through the local-state store, so the sentinel
+// count must ride useApprovalsSummaryData. PARTIAL mock via importOriginal
+// (the store still calls deriveApprovalsSummary et al.); the result object
+// is built ONCE — the provider coordinator keys on its identity.
+vi.mock(import("./lib/approvals-data.ts"), async (importOriginal) => {
+  const original = await importOriginal();
+  const summary = {
+    ...original.getApprovalsSummaryData(),
+    pendingByKind: {
+      tool_call: 8,
+      needs_input: 0,
+      plan: 0,
+      irreversible_write: 0,
+      review_stall: 0,
+    },
+    total: 8,
+  };
+  const result = { data: summary, status: "idle" as const, refetch: () => undefined };
+  return {
+    ...original,
+    useApprovalsSummaryData: () => result,
+  };
+});
+
+test("both bars render counts from the seams, never literals", async () => {
   const router = createAppRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
   });

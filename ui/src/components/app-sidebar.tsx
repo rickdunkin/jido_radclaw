@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { ApprovalsNavBadge } from "@/components/approvals-nav-badge";
 import { NavBadge } from "@/components/system/nav-badge";
 import { NodeHealth } from "@/components/node-health";
 import {
@@ -77,9 +78,7 @@ export function AppSidebar() {
                       {entry.badge === "attention" && (
                         <NavBadge count={data.attentionCount} className="ml-auto" />
                       )}
-                      {entry.badge === "approvals" && (
-                        <NavBadge count={data.approvalsCount} className="ml-auto" />
-                      )}
+                      {entry.badge === "approvals" && <ApprovalsNavBadge className="ml-auto" />}
                       {entry.id === "runs" && (
                         <>
                           <span

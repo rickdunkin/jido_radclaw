@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { ApprovalsNavBadge } from "@/components/approvals-nav-badge";
 import { NavBadge } from "@/components/system/nav-badge";
 import { useShellData } from "@/lib/shell-data";
 import { PHONE_TABS } from "@/lib/shell-nav";
@@ -110,11 +111,14 @@ export function TabBar() {
           <span className="text-[10px] group-data-[status=active]:font-semibold group-data-[status=active]:text-foreground">
             {tab.label}
           </span>
-          {tab.badge && (
+          {tab.badge === "attention" && (
             <NavBadge
-              count={tab.badge === "attention" ? data.attentionCount : data.approvalsCount}
+              count={data.attentionCount}
               className="absolute top-px right-[calc(50%-22px)] py-[1.5px]"
             />
+          )}
+          {tab.badge === "approvals" && (
+            <ApprovalsNavBadge className="absolute top-px right-[calc(50%-22px)] py-[1.5px]" />
           )}
         </Link>
       ))}

@@ -2,6 +2,10 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { Chevron } from "@/components/system/chevron";
 import { FeedRow } from "@/components/system/feed-row";
 import { GroupPanel } from "@/components/system/group-panel";
+import { MicroCaption } from "@/components/system/micro-caption";
+import { PageHeader } from "@/components/system/page-header";
+import { PageShell } from "@/components/system/page-shell";
+import { PreviewMarker } from "@/components/system/preview-marker";
 import { SectionLabel } from "@/components/system/section-label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -27,8 +31,8 @@ export const Route = createFileRoute("/_shell/")({
 // The only feed control is the Priority/By-project toggle (local state).
 function AttentionPage() {
   return (
-    <div className="@container/feed mx-auto w-full max-w-6xl pt-[18px] pb-6 md:px-5">
-      <PageHeader />
+    <PageShell>
+      <PageHeader title="Attention" trailing={<PreviewMarker />} />
       <Tabs defaultValue="priority" className="gap-0">
         <div className="flex items-center gap-1.5 px-[18px] pt-2.5 pb-3.5 md:px-0">
           <TabsList variant="pill" aria-label="Attention view">
@@ -44,29 +48,11 @@ function AttentionPage() {
           <ByProjectView />
         </TabsContent>
       </Tabs>
-      <p className="mt-3 hidden text-[0.6875rem] text-muted-foreground/60 @3xl/feed:block">
+      <MicroCaption className="mt-3 hidden @3xl/feed:block">
         Items never vanish silently — resolved checks off in place, storms collapse to one row.
-      </p>
+      </MicroCaption>
       <TempLinks />
-    </div>
-  );
-}
-
-function PageHeader() {
-  return (
-    <header className="flex items-center justify-between px-[18px] pb-1 md:px-0">
-      <h1 className="text-xl font-bold tracking-[-0.02em]">Attention</h1>
-      {/* Honest preview marker where the mock shows its live indicator: this
-          screen renders shipped fixture data (src/lib ships in every build —
-          the mock-exclusion guard only covers src/mocks/**), so no green
-          dot, no "live". Slice 1 swaps this for the real indicator. */}
-      <p
-        data-slot="preview-marker"
-        className="font-mono text-[0.6875rem] font-medium text-muted-foreground"
-      >
-        preview · sample data
-      </p>
-    </header>
+    </PageShell>
   );
 }
 

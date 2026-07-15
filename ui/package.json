@@ -12,7 +12,8 @@
     "test": "vp test",
     "lint": "vp lint",
     "fmt": "vp fmt",
-    "preview": "vp preview"
+    "preview": "vp preview",
+    "validate": "pnpm check && pnpm lint && pnpm fmt && pnpm test"
   },
   "dependencies": {
     "@apollo/client": "^4.2.6",

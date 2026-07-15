@@ -1,9 +1,23 @@
 import { MockedProvider } from "@apollo/client/testing/react";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  within,
+} from "@testing-library/react";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { afterEach, expect, test } from "vite-plus/test";
 import { SidebarProvider, useSidebar } from "@/components/ui/sidebar";
 import { ProjectsDocument } from "./gql/graphql.ts";
+import {
+  deriveApprovalsSummary,
+  getApprovalsSummaryData,
+  PREVIEW_NOW,
+} from "./lib/approvals-data.ts";
+import { useShellData } from "./lib/shell-data.ts";
 import { createAppRouter } from "./router.tsx";
 
 // The /projects active-state case renders a route that fires useQuery on
@@ -69,7 +83,9 @@ test("rail renders brand, seam-fed nav, honest PROJECTS rows, and list semantics
   const { sidebar, railNav, projectsGroup } = shellScopes();
 
   // Nav names include badge/sr-only text; the ◆ glyph is aria-hidden and
-  // absent from the Runs name.
+  // absent from the Runs name. The Approvals badge now derives from the
+  // approvals summary seam (useApprovalsSummary), not shell-data — the
+  // cross-check below anchors the "Approvals 3" pins to it.
   for (const name of ["Attention 3", "Approvals 3", "Threads", "Runs 2 runs at gates", "Board"]) {
     expect(within(railNav).getByRole("link", { name })).toBeDefined();
   }
@@ -260,11 +276,20 @@ test("on /projects only the Projects tab and the All projects row are current", 
   expect(currentOf(sidebar, "Homepage")).toBeNull();
 });
 
+test("the approvals nav-badge source agrees with the shell fixture's approvalsCount", () => {
+  // The cross-check anchor for the "Approvals 3" accessible-name pins: the
+  // badge reads useApprovalsSummary().summary?.pendingLeft, whose initial
+  // (no-resolutions) value must equal the shell fixture's approvalsCount.
+  const shell = renderHook(() => useShellData()).result.current;
+  const initial = deriveApprovalsSummary(getApprovalsSummaryData(), [], PREVIEW_NOW);
+  expect(initial.pendingLeft).toBe(shell.approvalsCount);
+});
+
 test("stub routes render inside the shell; /styleguide stays out of nav", async () => {
   // "/" is no longer here: the Attention feed is a real screen, owned by
   // attention.test.tsx (which also owns its temp-links reachability rows).
+  // "/approvals" left too — the real 2b screen is owned by approvals.test.tsx.
   const routes = [
-    { path: "/approvals", heading: "Approvals" },
     { path: "/threads", heading: "Threads" },
     { path: "/board", heading: "Board" },
     { path: "/styleguide", heading: "argus" },

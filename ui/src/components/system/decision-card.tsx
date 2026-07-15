@@ -6,8 +6,9 @@ import { MetaLine } from "./meta-line";
 // irreversible/expired, 5b desk): invariant chrome + slots. Everything
 // below the header — command preview, scope chips, note field, reply row,
 // action rows — is slotted `children`, owned by the gate screens (2b),
-// which pass real controls later. The shell itself renders no focusable
-// control. The version chip ("v2 · you") is deferred to the gate screens.
+// which pass real controls. The shell itself renders no focusable control.
+// The version chip ("v2 · you") is deferred to the gate screens (3b/4b);
+// 2b ships none per the step-5 locked decision.
 //
 // A11y mirrors GroupPanel's labelled-section rule: with `labelId` the card
 // is an <article aria-labelledby>; the CALL SITE owns heading semantics by
@@ -20,8 +21,21 @@ import { MetaLine } from "./meta-line";
 // mock evidence — retune in the light check). Irreversible cards keep the
 // amber tone (red enters via the icon slot + slotted notice). tone "muted"
 // is 4a's expired card: dashed default border, washed surface, no shadow.
+// tone "resolved" is 2b's decided-in-place face: neutral border-border +
+// bg-card in BOTH modes, no dash, NO opacity anywhere — amber signals
+// pending and dashed muted is 4a's expired vocabulary, and the neutral look
+// is component vocabulary, not caller knowledge of the shell's internal
+// border classes (a caller border-border override would silently lose to
+// dark:border-status-waiting/30 under tailwind-merge's same-variant rule).
 // The 14px radius is deliberate mock anatomy between lg and xl — don't
 // bend it onto the scale.
+const TONE_CLASSES: Record<"amber" | "muted" | "resolved", string> = {
+  amber:
+    "border-status-waiting/45 bg-card shadow-xs dark:border-status-waiting/30 dark:shadow-none",
+  muted: "border-dashed bg-card/60 text-muted-foreground",
+  resolved: "border-border bg-card",
+};
+
 export function DecisionCard({
   tone = "amber",
   icon,
@@ -32,7 +46,7 @@ export function DecisionCard({
   className,
   children,
 }: {
-  tone?: "amber" | "muted";
+  tone?: "amber" | "muted" | "resolved";
   icon?: ReactNode;
   title: ReactNode;
   labelId?: string;
@@ -49,9 +63,7 @@ export function DecisionCard({
       aria-labelledby={labelId}
       className={cn(
         "flex flex-col gap-[11px] rounded-[14px] border p-[13px]",
-        tone === "amber"
-          ? "border-status-waiting/45 bg-card shadow-xs dark:border-status-waiting/30 dark:shadow-none"
-          : "border-dashed bg-card/60 text-muted-foreground",
+        TONE_CLASSES[tone],
         className,
       )}
     >

@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { Chevron } from "./chevron";
 import { FeedAction } from "./feed-action";
 import { FeedChip } from "./feed-chip";
+import { InlineRef } from "./inline-ref";
 import { MetaLine } from "./meta-line";
 import { StatusIconChip, type StatusIconChipStatus } from "./status-icon-chip";
 
@@ -117,9 +118,7 @@ export function FeedRow({
           {item.kind === "resolved" && item.titleCode !== undefined && (
             <>
               {" "}
-              <span className="font-mono text-[0.6875rem] font-medium text-foreground/85">
-                {item.titleCode}
-              </span>
+              <InlineRef tone="code">{item.titleCode}</InlineRef>
             </>
           )}
         </p>

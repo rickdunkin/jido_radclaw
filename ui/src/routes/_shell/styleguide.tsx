@@ -5,6 +5,8 @@ import { DecisionCard } from "@/components/system/decision-card";
 import { FeedChip } from "@/components/system/feed-chip";
 import { FeedRow } from "@/components/system/feed-row";
 import { GroupPanel } from "@/components/system/group-panel";
+import { InlineRef } from "@/components/system/inline-ref";
+import { MicroCaption } from "@/components/system/micro-caption";
 import { NavBadge } from "@/components/system/nav-badge";
 import { SectionLabel } from "@/components/system/section-label";
 import { StatusDot, type StatusDotStatus } from "@/components/system/status-dot";
@@ -18,9 +20,11 @@ export const Route = createFileRoute("/_shell/styleguide")({
   component: StyleguidePage,
 });
 
-// The composite SPEC SHEET for components/system/: every vocabulary piece
-// rendered, including the ones with no consuming screen yet (DecisionCard,
-// the full StatusDot vocabulary) so Approvals/Threads start by composing.
+// The composite SPEC SHEET for components/system/: the vocabulary pieces
+// rendered, including ones with no consuming screen yet (DecisionCard, the
+// full StatusDot vocabulary) so Approvals/Threads start by composing. Page
+// chrome (PageShell/PageHeader/PreviewMarker) is pinned by its consuming
+// screens instead — PageHeader can't demo here without a second h1.
 // Inline demo literals are deliberately OK here — the sheet's literals ARE
 // the spec; the "no literals in components" rule governs screens fed by
 // lib/ seams. Everything stays inert (FeedAction precedent): demo actions
@@ -277,8 +281,7 @@ function DecisionCardsSection() {
           icon={<StatusIconChip status="working" glyph="ex" size="lg" />}
           title={
             <h3 id="sg-dc-approve">
-              <span className="font-mono text-xs text-status-working">export-pipeline</span> wants
-              to run a command
+              <InlineRef>export-pipeline</InlineRef> wants to run a command
             </h3>
           }
           meta={["quill", "wt export-stream", "atlas", "T-214", "4m"]}
@@ -315,7 +318,7 @@ function DecisionCardsSection() {
           icon={<StatusIconChip status="waiting" glyph="?" size="lg" />}
           title={
             <h3 id="sg-dc-question">
-              <span className="font-mono text-xs text-status-working">webhook-endpoints</span> asked
+              <InlineRef>webhook-endpoints</InlineRef> asked
             </h3>
           }
           meta={["helios-api", "wren", "12m"]}
@@ -347,8 +350,8 @@ function DecisionCardsSection() {
           icon={<StatusIconChip status="failed" glyph="!" size="lg" />}
           title={
             <h3 id="sg-dc-irreversible">
-              <span className="font-mono text-xs text-status-working">release-notes</span> wants to
-              force-push <span className="font-mono text-xs">main</span>
+              <InlineRef>release-notes</InlineRef> wants to force-push{" "}
+              <span className="font-mono text-xs">main</span>
             </h3>
           }
           meta={["quill", "atlas", "2m"]}
@@ -378,6 +381,10 @@ function DecisionCardsSection() {
             </span>
           }
         />
+        <MicroCaption>
+          Cards stay until you decide, then resolve in place — answering a comment, not clearing a
+          dialog.
+        </MicroCaption>
       </div>
     </Section>
   );
